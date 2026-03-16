@@ -12,60 +12,84 @@ const client = new OpenAI({
   },
 });
 
+type ApiErrorCode =
+  | "EMPTY_MESSAGE"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "RATE_LIMIT"
+  | "PROVIDER_ERROR"
+  | "SERVER_ERROR";
+
+function mapStatusToCode(status: number): ApiErrorCode {
+  if (status === 401) return "UNAUTHORIZED";
+  if (status === 402 || status === 403) return "FORBIDDEN";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 429) return "RATE_LIMIT";
+  if (status >= 500) return "PROVIDER_ERROR";
+  return "SERVER_ERROR";
+}
+
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { message?: string };
   const message = String(body?.message ?? "").trim();
 
   if (!message) {
-    return Response.json({ error: "Message is required." }, { status: 400 });
+    return Response.json(
+      { code: "EMPTY_MESSAGE", error: "Message is empty." },
+      { status: 400 }
+    );
   }
 
-  // Fallback (so UI works even if key is missing)
   if (!process.env.OPENROUTER_API_KEY) {
+    // Still allow demo mode
     return Response.json({
       reply:
         "Mock AI (no OpenRouter API key configured yet).\n\n" +
         "Budget for €1200/month:\n" +
-        "- Needs: 50%\n" +
-        "- Food: 15%\n" +
-        "- Transport: 10%\n" +
-        "- Savings: 15%\n" +
-        "- Fun/Misc: 10%\n",
+        "1. Housing: 40%\n" +
+        "2. Food: 20%\n" +
+        "3. Entertainment: 15%\n" +
+        "4. Savings: 20%\n" +
+        "5. Miscellaneous: 5%\n",
     });
   }
 
   try {
     const completion = await client.chat.completions.create({
-      // If this model errors, we'll change it after we see the exact error.
-      model: "qwen/qwen-2.5-7b-instruct",
+      model: "meta-llama/llama-3.1-8b-instruct",
       temperature: 0.3,
       max_tokens: 500,
       messages: [
-  {
-    role: "system",
-    content:
-      "You are SoloLedger AI. Answer directly. Keep it short and structured. When asked for a budget, return 5 categories with percentages that add up to 100%.",
-  },
-  { role: "user", content: message },
-],
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant. Reply clearly and briefly. If the user asks for a budget, return 5 categories with percentages that add up to 100%.",
+        },
+        { role: "user", content: message },
+      ],
     });
 
-    return Response.json({
-      reply: completion.choices[0]?.message?.content ?? "",
-    });
+    return Response.json({ reply: completion.choices[0]?.message?.content ?? "" });
   } catch (err: any) {
-    // Print full error in terminal
-    console.error("OpenRouter error:", err);
-
-    // Return the most informative message to the UI
-    const msg =
-      err?.response?.data?.error?.message ??
-      err?.response?.data?.message ??
-      err?.message ??
-      "Server error.";
-
     const status = err?.status ?? err?.response?.status ?? 500;
+    const code = mapStatusToCode(status);
 
-    return Response.json({ error: msg }, { status });
+    // Log detailed info for developer only
+    console.error("OpenRouter error (server-side):", {
+      status,
+      code,
+      message: err?.message,
+      data: err?.response?.data,
+    });
+
+    // Friendly error for user
+    return Response.json(
+      {
+        code,
+        error: "We couldn't reach the AI provider. Please try again.",
+      },
+      { status }
+    );
   }
 }
