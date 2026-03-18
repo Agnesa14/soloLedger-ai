@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "./providers/AuthProvider";
 
 type ChatApiOk = { reply: string };
 type ChatApiErr = { error?: string; code?: string };
@@ -11,39 +14,42 @@ function toFriendlyMessage(code?: string, status?: number) {
     case "EMPTY_MESSAGE":
       return "Message is empty. Please type something first.";
     case "UNAUTHORIZED":
-      return "Unauthorized. The API key is missing or invalid.";
+      return "Unauthorized. Please log in and try again.";
     case "FORBIDDEN":
-      return "Access denied or insufficient credits. Please check your credits or try another model.";
+      return "Access denied or insufficient credits. Please try again later.";
     case "NOT_FOUND":
-      return "Model/service not found. Please try a different model.";
+      return "Service/model not found. Please try again later.";
     case "RATE_LIMIT":
       return "Too many requests. Please wait a moment and try again.";
     case "PROVIDER_ERROR":
       return "The AI provider is currently unavailable. Please try again in a moment.";
     default:
       if (status === 400) return "Message is empty. Please type something first.";
-      if (status === 401) return "Unauthorized. The API key is missing or invalid.";
+      if (status === 401) return "Unauthorized. Please log in and try again.";
       if (status === 402 || status === 403)
-        return "Access denied or insufficient credits. Please check your credits or try another model.";
-      if (status === 404) return "Model/service not found. Please try a different model.";
+        return "Access denied or insufficient credits. Please try again later.";
+      if (status === 404) return "Service/model not found. Please try again later.";
       if (status === 429) return "Too many requests. Please wait a moment and try again.";
       if (status && status >= 500) return "Server error. Please try again later.";
       return "Something went wrong. Please try again.";
   }
 }
 
-function Spinner() {
+function Spinner({ className = "" }: { className?: string }) {
   return (
     <span
-      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent"
+      className={`inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent ${className}`}
       aria-hidden="true"
     />
   );
 }
 
 export default function Home() {
+  const router = useRouter();
+  const { user, loading: authLoading, signOut } = useAuth();
+
   const [input, setInput] = useState("");
-  const [lastPrompt, setLastPrompt] = useState(""); // <-- NEW
+  const [lastPrompt, setLastPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState("");
   const [error, setError] = useState("");
@@ -51,9 +57,15 @@ export default function Home() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastMessageRef = useRef<string>("");
 
+  // Protect this page: if not logged in, redirect to /login
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (!authLoading && !user) router.replace("/login");
+  }, [authLoading, user, router]);
+
+  // Focus only when authenticated and ready
+  useEffect(() => {
+    if (!authLoading && user) textareaRef.current?.focus();
+  }, [authLoading, user]);
 
   async function sendMessage(message: string) {
     setLoading(true);
@@ -77,6 +89,7 @@ export default function Home() {
       if (!res.ok) {
         const errData = data as ChatApiErr;
         setError(toFriendlyMessage(errData?.code, res.status));
+        // keep technical details out of UI
         console.warn("API error:", res.status, errData?.code, errData?.error);
         return;
       }
@@ -110,7 +123,6 @@ export default function Home() {
       return;
     }
 
-    // Save what the user asked so it stays visible in the UI
     setLastPrompt(message);
     lastMessageRef.current = message;
 
@@ -121,28 +133,69 @@ export default function Home() {
     const msg = lastMessageRef.current.trim();
     if (!msg || loading) return;
 
-    // Keep last prompt visible on retry too
     setLastPrompt(msg);
-
     await sendMessage(msg);
   }
+
+  function handleClear() {
+    setInput("");
+    setResponse("");
+    setError("");
+    setLastPrompt("");
+    lastMessageRef.current = "";
+    textareaRef.current?.focus();
+  }
+
+  // Auth loading screen
+  if (authLoading) {
+    return (
+      <main className="min-h-screen grid place-items-center bg-gray-50 text-gray-600">
+        Loading…
+      </main>
+    );
+  }
+
+  // Redirecting (not logged in)
+  if (!user) return null;
 
   const charLimit = 800;
   const canSubmit = !loading && !!input.trim();
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
-      <div className="mx-auto max-w-2xl px-4 py-12">
-        <header className="mb-8">
-          <h1 className="text-4xl font-semibold tracking-tight text-slate-900">
-            SoloLedger AI
-          </h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            Ask a question and get an AI response.
-          </p>
+      <div className="mx-auto max-w-2xl px-4 py-10">
+        {/* Top bar */}
+        <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-4xl font-semibold tracking-tight text-slate-900">
+              SoloLedger AI
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Logged in as <span className="font-medium text-slate-900">{user.email}</span>
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              href="/dashboard"
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50"
+            >
+              Dashboard
+            </Link>
+
+            <button
+              onClick={async () => {
+                await signOut();
+                router.replace("/login");
+              }}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-black"
+            >
+              Logout
+            </button>
+          </div>
         </header>
 
-        {/* Form */}
+        {/* Form card */}
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex items-center justify-between">
@@ -179,16 +232,9 @@ export default function Home() {
 
               <button
                 type="button"
-                onClick={() => {
-                  setInput("");
-                  setResponse("");
-                  setError("");
-                  setLastPrompt("");
-                  lastMessageRef.current = "";
-                  textareaRef.current?.focus();
-                }}
+                onClick={handleClear}
                 className="w-full rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-                disabled={loading}
+                disabled={loading && !input && !response && !error && !lastPrompt}
               >
                 Clear
               </button>
