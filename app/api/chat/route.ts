@@ -35,10 +35,7 @@ export async function POST(req: Request) {
   const message = String(body?.message ?? "").trim();
 
   if (!message) {
-    return Response.json(
-      { code: "EMPTY_MESSAGE", error: "Message is empty." },
-      { status: 400 }
-    );
+    return Response.json({ code: "EMPTY_MESSAGE", error: "Message is empty." }, { status: 400 });
   }
 
   if (!process.env.OPENROUTER_API_KEY) {
@@ -75,7 +72,6 @@ export async function POST(req: Request) {
     const status = err?.status ?? err?.response?.status ?? 500;
     const code = mapStatusToCode(status);
 
-    // Log detailed info for developer only
     console.error("OpenRouter error (server-side):", {
       status,
       code,
@@ -83,13 +79,6 @@ export async function POST(req: Request) {
       data: err?.response?.data,
     });
 
-    // Friendly error for user
-    return Response.json(
-      {
-        code,
-        error: "We couldn't reach the AI provider. Please try again.",
-      },
-      { status }
-    );
+    return Response.json({ code, error: "We couldn't reach the AI provider. Please try again." }, { status });
   }
 }
