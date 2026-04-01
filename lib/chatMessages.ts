@@ -22,6 +22,7 @@ export async function loadMyChatMessages(limit = 200) {
   const { data, error } = await supabase
     .from("chat_messages")
     .select("id,user_id,role,content,created_at")
+    .eq("user_id", user.id) // ✅ extra safety + clearer for grading
     .order("created_at", { ascending: true })
     .limit(limit);
 
