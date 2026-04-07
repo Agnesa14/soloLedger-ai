@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SoloLedger AI
 
-## Getting Started
+**Live Demo:** https://solo-ledger-ai.vercel.app/
 
-First, run the development server:
+SoloLedger AI is a **Next.js (TypeScript)** application that provides an authenticated **AI chat** experience. It uses **Supabase Auth** for signup/login and **Supabase Postgres** to persist chat messages so users can refresh or reopen the app and continue where they left off. **Row Level Security (RLS)** ensures each user can only access their own data.
 
+## Features
+- Authentication (Sign up / Login) with Supabase Auth
+- Protected routes (only authenticated users can access the dashboard/chat)
+- AI Chat (user + assistant messages)
+- Database persistence (messages stored in Supabase `chat_messages`)
+- Row Level Security (RLS): users can only read/insert their own rows (`auth.uid() = user_id`)
+
+## Tech Stack
+- Next.js (App Router)
+- TypeScript
+- Supabase (Auth + Postgres)
+- OpenRouter (AI API)
+- Vercel (Deployment)
+
+## Environment Variables
+To run locally, create a `.env.local` file in the project root and set:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `OPENROUTER_API_KEY`
+
+In Vercel, set the same variables in **Project → Settings → Environment Variables**, then redeploy.
+
+## Run Locally
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open: http://localhost:3000
