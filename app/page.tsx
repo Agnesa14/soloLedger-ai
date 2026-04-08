@@ -25,6 +25,8 @@ function toFriendlyMessage(code?: string, status?: number) {
   switch (code) {
     case "EMPTY_MESSAGE":
       return "Message is empty. Please type something first.";
+    case "TOO_LONG":
+      return "Message is too long (max 800 characters).";
     case "UNAUTHORIZED":
       return "Unauthorized. Please log in and try again.";
     case "FORBIDDEN":
@@ -36,7 +38,7 @@ function toFriendlyMessage(code?: string, status?: number) {
     case "PROVIDER_ERROR":
       return "The AI provider is currently unavailable. Please try again in a moment.";
     default:
-      if (status === 400) return "Message is empty. Please type something first.";
+      if (status === 400) return "Message is invalid. Please check your input and try again.";
       if (status === 401) return "Unauthorized. Please log in and try again.";
       if (status === 402 || status === 403)
         return "Access denied or insufficient credits. Please try again later.";
@@ -124,10 +126,14 @@ export default function Home() {
       const okData = data as ChatApiOk;
       return String(okData.reply ?? "").trim();
     } catch (err: any) {
+      // Edge case: timeout
       if (err?.name === "AbortError") throw new Error("Request timed out. Please try again.");
+
+      // Edge case: offline / network down
       if (typeof navigator !== "undefined" && navigator.onLine === false) {
         throw new Error("You're offline. Check your internet connection and try again.");
       }
+
       throw new Error(err?.message ?? "Network error. Please try again.");
     } finally {
       clearTimeout(timeoutId);
@@ -137,11 +143,27 @@ export default function Home() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
+    // Edge case: double submit
     if (!canUse || busy) return;
 
+    // Edge case: offline before doing anything
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setError("You're offline. Check your internet connection and try again.");
+      return;
+    }
+
+    const charLimit = 800;
     const text = input.trim();
+
+    // Edge case: empty input
     if (!text) {
       setError("Please type a question first.");
+      return;
+    }
+
+    // Edge case: too long (extra safety; UI also has maxLength)
+    if (text.length > charLimit) {
+      setError(`Message is too long (max ${charLimit} characters).`);
       return;
     }
 
@@ -164,7 +186,18 @@ export default function Home() {
       await insertMyChatMessage("assistant", reply);
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (err: any) {
-      setError(String(err?.message ?? "Something went wrong. Please try again."));
+      const msg = String(err?.message ?? "Something went wrong. Please try again.");
+      setError(msg);
+
+      // Edge case: expired session / unauthorized -> redirect gracefully
+      if (
+        msg.toLowerCase().includes("not authenticated") ||
+        msg.toLowerCase().includes("unauthorized") ||
+        msg.toLowerCase().includes("session")
+      ) {
+        setInfo("Your session expired. Please log in again.");
+        router.replace("/login");
+      }
     } finally {
       setBusy(false);
     }
@@ -201,7 +234,10 @@ export default function Home() {
   if (!user) return null;
 
   const charLimit = 800;
-  const canSubmit = !busy && !!input.trim();
+  const trimmed = input.trim();
+  const isEmpty = trimmed.length === 0;
+  const isTooLong = trimmed.length > charLimit;
+  const canSubmit = !busy && !isEmpty && !isTooLong;
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
@@ -253,10 +289,10 @@ export default function Home() {
               <label className="text-sm font-medium text-slate-900">Prompt</label>
               <span
                 className={`text-xs ${
-                  input.length >= charLimit ? "text-red-600" : "text-slate-500"
+                  trimmed.length >= charLimit ? "text-red-600" : "text-slate-500"
                 }`}
               >
-                {input.length}/{charLimit}
+                {trimmed.length}/{charLimit}
               </span>
             </div>
 
@@ -269,6 +305,12 @@ export default function Home() {
               className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:shadow-[0_0_0_5px_rgba(15,23,42,0.08)]"
               disabled={busy}
             />
+
+            {isTooLong ? (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                Message is too long (max {charLimit} characters).
+              </div>
+            ) : null}
 
             <div className="flex flex-col gap-3 sm:flex-row">
               <button
@@ -301,7 +343,8 @@ export default function Home() {
             </div>
           ) : null}
 
-          {error && !busy ? (
+          {/* Show errors even if busy is false/true; keeps feedback clear */}
+          {error ? (
             <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
               <div className="font-semibold">Error</div>
               <div className="mt-1 text-red-800">{error}</div>
@@ -317,16 +360,16 @@ export default function Home() {
             ) : (
               <div className="space-y-3">
                 {messages.map((m, idx) => {
-                  const isUser = m.role === "user";
+                  const isUserMsg = m.role === "user";
                   return (
                     <div
                       key={idx}
-                      className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                      className={`flex ${isUserMsg ? "justify-end" : "justify-start"}`}
                     >
                       <div
                         className={[
                           "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm",
-                          isUser
+                          isUserMsg
                             ? "bg-slate-900 text-white"
                             : "bg-emerald-50 text-slate-900 border border-emerald-200",
                         ].join(" ")}

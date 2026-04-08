@@ -14,6 +14,7 @@ const client = new OpenAI({
 
 type ApiErrorCode =
   | "EMPTY_MESSAGE"
+  | "TOO_LONG"
   | "UNAUTHORIZED"
   | "FORBIDDEN"
   | "NOT_FOUND"
@@ -34,8 +35,18 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { message?: string };
   const message = String(body?.message ?? "").trim();
 
+  // Edge case: empty input
   if (!message) {
     return Response.json({ code: "EMPTY_MESSAGE", error: "Message is empty." }, { status: 400 });
+  }
+
+  // Edge case: input too long (server-side hardening)
+  const MAX_CHARS = 800;
+  if (message.length > MAX_CHARS) {
+    return Response.json(
+      { code: "TOO_LONG", error: `Message is too long (max ${MAX_CHARS} characters).` },
+      { status: 400 }
+    );
   }
 
   if (!process.env.OPENROUTER_API_KEY) {
@@ -79,6 +90,9 @@ export async function POST(req: Request) {
       data: err?.response?.data,
     });
 
-    return Response.json({ code, error: "We couldn't reach the AI provider. Please try again." }, { status });
+    return Response.json(
+      { code, error: "We couldn't reach the AI provider. Please try again." },
+      { status }
+    );
   }
 }
