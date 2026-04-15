@@ -1,3 +1,4 @@
+import { getCurrentUserOrThrow } from "./auth";
 import { supabase } from "./supabaseClient";
 
 export type TransactionType = "income" | "expense";
@@ -13,14 +14,13 @@ export type TransactionRow = {
   created_at: string;
 };
 
-export async function loadMyRecentTransactions(limit = 10) {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
+type TransactionSummaryRow = {
+  type: TransactionType;
+  amount: number | string | null;
+};
 
-  if (userErr) throw userErr;
-  if (!user) throw new Error("Not authenticated");
+export async function loadMyRecentTransactions(limit = 10) {
+  const user = await getCurrentUserOrThrow();
 
   const { data, error } = await supabase
     .from("transactions")
@@ -35,13 +35,7 @@ export async function loadMyRecentTransactions(limit = 10) {
 }
 
 export async function getMyMonthSummary(year: number, month1to12: number) {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) throw userErr;
-  if (!user) throw new Error("Not authenticated");
+  const user = await getCurrentUserOrThrow();
 
   const start = new Date(Date.UTC(year, month1to12 - 1, 1));
   const end = new Date(Date.UTC(year, month1to12, 1)); // next month
@@ -58,14 +52,17 @@ export async function getMyMonthSummary(year: number, month1to12: number) {
 
   if (error) throw error;
 
-  let income = 0;
-  let expenses = 0;
+  const rows = (data ?? []) as TransactionSummaryRow[];
 
-  for (const row of data ?? []) {
-    const amt = Number((row as any).amount ?? 0);
-    if ((row as any).type === "income") income += amt;
-    else expenses += amt;
-  }
+  const { income, expenses } = rows.reduce(
+    (totals, row) => {
+      const amount = Number(row.amount ?? 0);
+      if (row.type === "income") totals.income += amount;
+      else totals.expenses += amount;
+      return totals;
+    },
+    { income: 0, expenses: 0 }
+  );
 
   return { income, expenses, net: income - expenses, from, toExclusive };
 }
@@ -77,13 +74,7 @@ export async function insertMyTransaction(params: {
   note?: string;
   date: string; // YYYY-MM-DD
 }) {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) throw userErr;
-  if (!user) throw new Error("Not authenticated");
+  const user = await getCurrentUserOrThrow();
 
   const payload = {
     user_id: user.id,

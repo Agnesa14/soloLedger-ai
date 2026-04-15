@@ -5,8 +5,8 @@ export default function LoginPage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-screen grid place-items-center bg-gray-50 text-gray-600">
-          Loading…
+        <main className="grid min-h-screen place-items-center bg-gray-50 text-gray-600">
+          Loading...
         </main>
       }
     >

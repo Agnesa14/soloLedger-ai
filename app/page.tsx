@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "./providers/AuthProvider";
+import { getErrorMessage, hasMessage } from "@/lib/errors";
 import {
   clearMyChatMessages,
   insertMyChatMessage,
@@ -40,8 +41,9 @@ function toFriendlyMessage(code?: string, status?: number) {
     default:
       if (status === 400) return "Message is invalid. Please check your input and try again.";
       if (status === 401) return "Unauthorized. Please log in and try again.";
-      if (status === 402 || status === 403)
+      if (status === 402 || status === 403) {
         return "Access denied or insufficient credits. Please try again later.";
+      }
       if (status === 404) return "Service/model not found. Please try again later.";
       if (status === 429) return "Too many requests. Please wait a moment and try again.";
       if (status && status >= 500) return "Server error. Please try again later.";
@@ -70,33 +72,36 @@ export default function Home() {
 
   const canUse = useMemo(() => !authLoading && !!user, [authLoading, user]);
 
-  // Protect this page: if not logged in, redirect to /login
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
   }, [authLoading, user, router]);
 
-  // Load history for the logged-in user
   useEffect(() => {
     if (!canUse) return;
 
     let cancelled = false;
 
-    (async () => {
+    async function loadHistory() {
       setError("");
       setInfo("");
+
       try {
         const rows = await loadMyChatMessages(300);
         if (cancelled) return;
 
         setMessages(
-          rows.map((r) => ({ role: r.role, content: r.content, created_at: r.created_at }))
+          rows.map((row) => ({ role: row.role, content: row.content, created_at: row.created_at }))
         );
 
         if (rows.length === 0) setInfo("No history yet. Send your first message.");
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? "Failed to load chat history.");
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(getErrorMessage(loadError, "Failed to load chat history."));
+        }
       }
-    })();
+    }
+
+    void loadHistory();
 
     return () => {
       cancelled = true;
@@ -105,7 +110,7 @@ export default function Home() {
 
   async function callChatApi(message: string) {
     const controller = new AbortController();
-    const timeoutMs = 25000;
+    const timeoutMs = 25_000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
@@ -125,16 +130,16 @@ export default function Home() {
 
       const okData = data as ChatApiOk;
       return String(okData.reply ?? "").trim();
-    } catch (err: any) {
-      // Edge case: timeout
-      if (err?.name === "AbortError") throw new Error("Request timed out. Please try again.");
+    } catch (requestError) {
+      if (requestError instanceof Error && requestError.name === "AbortError") {
+        throw new Error("Request timed out. Please try again.");
+      }
 
-      // Edge case: offline / network down
       if (typeof navigator !== "undefined" && navigator.onLine === false) {
         throw new Error("You're offline. Check your internet connection and try again.");
       }
 
-      throw new Error(err?.message ?? "Network error. Please try again.");
+      throw new Error(getErrorMessage(requestError, "Network error. Please try again."));
     } finally {
       clearTimeout(timeoutId);
     }
@@ -142,11 +147,8 @@ export default function Home() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-
-    // Edge case: double submit
     if (!canUse || busy) return;
 
-    // Edge case: offline before doing anything
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       setError("You're offline. Check your internet connection and try again.");
       return;
@@ -155,13 +157,11 @@ export default function Home() {
     const charLimit = 800;
     const text = input.trim();
 
-    // Edge case: empty input
     if (!text) {
       setError("Please type a question first.");
       return;
     }
 
-    // Edge case: too long (extra safety; UI also has maxLength)
     if (text.length > charLimit) {
       setError(`Message is too long (max ${charLimit} characters).`);
       return;
@@ -172,28 +172,24 @@ export default function Home() {
     setInfo("");
 
     try {
-      // Save user message (DB + UI)
       await insertMyChatMessage("user", text);
       setMessages((prev) => [...prev, { role: "user", content: text }]);
 
       setInput("");
 
-      // Call AI
       const reply = await callChatApi(text);
       if (!reply) throw new Error("Empty assistant reply.");
 
-      // Save assistant message (DB + UI)
       await insertMyChatMessage("assistant", reply);
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
-    } catch (err: any) {
-      const msg = String(err?.message ?? "Something went wrong. Please try again.");
-      setError(msg);
+    } catch (submitError) {
+      const message = getErrorMessage(submitError, "Something went wrong. Please try again.");
+      setError(message);
 
-      // Edge case: expired session / unauthorized -> redirect gracefully
       if (
-        msg.toLowerCase().includes("not authenticated") ||
-        msg.toLowerCase().includes("unauthorized") ||
-        msg.toLowerCase().includes("session")
+        hasMessage(submitError, "not authenticated") ||
+        hasMessage(submitError, "unauthorized") ||
+        hasMessage(submitError, "session")
       ) {
         setInfo("Your session expired. Please log in again.");
         router.replace("/login");
@@ -213,24 +209,22 @@ export default function Home() {
     try {
       await clearMyChatMessages();
       setMessages([]);
-      setInfo("History cleared (only for your account).");
-    } catch (err: any) {
-      setError(String(err?.message ?? "Failed to clear history."));
+      setInfo("History cleared for your account.");
+    } catch (clearError) {
+      setError(getErrorMessage(clearError, "Failed to clear history."));
     } finally {
       setBusy(false);
     }
   }
 
-  // Auth loading screen
   if (authLoading) {
     return (
-      <main className="min-h-screen grid place-items-center bg-gray-50 text-gray-600">
-        Loading…
+      <main className="grid min-h-screen place-items-center bg-gray-50 text-gray-600">
+        Loading...
       </main>
     );
   }
 
-  // Redirecting (not logged in)
   if (!user) return null;
 
   const charLimit = 800;
@@ -242,15 +236,11 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
       <div className="mx-auto max-w-2xl px-4 py-10">
-        {/* Top bar */}
         <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-4xl font-semibold tracking-tight text-slate-900">
-              SoloLedger AI
-            </h1>
+            <h1 className="text-4xl font-semibold tracking-tight text-slate-900">SoloLedger AI</h1>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Logged in as{" "}
-              <span className="font-medium text-slate-900">{user.email}</span>
+              Logged in as <span className="font-medium text-slate-900">{user.email}</span>
             </p>
           </div>
 
@@ -282,16 +272,11 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Form card */}
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-slate-900">Prompt</label>
-              <span
-                className={`text-xs ${
-                  trimmed.length >= charLimit ? "text-red-600" : "text-slate-500"
-                }`}
-              >
+              <span className={`text-xs ${trimmed.length >= charLimit ? "text-red-600" : "text-slate-500"}`}>
                 {trimmed.length}/{charLimit}
               </span>
             </div>
@@ -319,7 +304,7 @@ export default function Home() {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
               >
                 {busy ? <Spinner /> : null}
-                {busy ? "Thinking…" : "Submit"}
+                {busy ? "Thinking..." : "Submit"}
               </button>
 
               <button
@@ -343,7 +328,6 @@ export default function Home() {
             </div>
           ) : null}
 
-          {/* Show errors even if busy is false/true; keeps feedback clear */}
           {error ? (
             <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
               <div className="font-semibold">Error</div>
@@ -352,29 +336,25 @@ export default function Home() {
           ) : null}
         </section>
 
-        {/* Chat history (bubble style) */}
         <section className="mt-6">
           <div className="h-[520px] overflow-y-auto rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
             {messages.length === 0 ? (
               <div className="text-sm text-slate-500">No messages yet.</div>
             ) : (
               <div className="space-y-3">
-                {messages.map((m, idx) => {
-                  const isUserMsg = m.role === "user";
+                {messages.map((message, idx) => {
+                  const isUserMsg = message.role === "user";
                   return (
-                    <div
-                      key={idx}
-                      className={`flex ${isUserMsg ? "justify-end" : "justify-start"}`}
-                    >
+                    <div key={idx} className={`flex ${isUserMsg ? "justify-end" : "justify-start"}`}>
                       <div
                         className={[
                           "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm",
                           isUserMsg
                             ? "bg-slate-900 text-white"
-                            : "bg-emerald-50 text-slate-900 border border-emerald-200",
+                            : "border border-emerald-200 bg-emerald-50 text-slate-900",
                         ].join(" ")}
                       >
-                        <div className="whitespace-pre-wrap">{m.content}</div>
+                        <div className="whitespace-pre-wrap">{message.content}</div>
                       </div>
                     </div>
                   );

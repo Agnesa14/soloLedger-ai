@@ -1,3 +1,4 @@
+import { getCurrentUserOrThrow } from "./auth";
 import { supabase } from "./supabaseClient";
 
 export type ChatRole = "user" | "assistant";
@@ -11,18 +12,12 @@ export type ChatMessageRow = {
 };
 
 export async function loadMyChatMessages(limit = 200) {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) throw userErr;
-  if (!user) return [];
+  const user = await getCurrentUserOrThrow();
 
   const { data, error } = await supabase
     .from("chat_messages")
     .select("id,user_id,role,content,created_at")
-    .eq("user_id", user.id) // ✅ extra safety + clearer for grading
+    .eq("user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(limit);
 
@@ -31,13 +26,7 @@ export async function loadMyChatMessages(limit = 200) {
 }
 
 export async function insertMyChatMessage(role: ChatRole, content: string) {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) throw userErr;
-  if (!user) throw new Error("Not authenticated");
+  const user = await getCurrentUserOrThrow();
 
   const { data, error } = await supabase
     .from("chat_messages")
@@ -54,13 +43,7 @@ export async function insertMyChatMessage(role: ChatRole, content: string) {
 }
 
 export async function clearMyChatMessages() {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) throw userErr;
-  if (!user) throw new Error("Not authenticated");
+  const user = await getCurrentUserOrThrow();
 
   const { error } = await supabase.from("chat_messages").delete().eq("user_id", user.id);
   if (error) throw error;

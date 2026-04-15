@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getErrorMessage, getErrorStatus } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,26 +36,23 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { message?: string };
   const message = String(body?.message ?? "").trim();
 
-  // Edge case: empty input
   if (!message) {
     return Response.json({ code: "EMPTY_MESSAGE", error: "Message is empty." }, { status: 400 });
   }
 
-  // Edge case: input too long (server-side hardening)
-  const MAX_CHARS = 800;
-  if (message.length > MAX_CHARS) {
+  const maxChars = 800;
+  if (message.length > maxChars) {
     return Response.json(
-      { code: "TOO_LONG", error: `Message is too long (max ${MAX_CHARS} characters).` },
+      { code: "TOO_LONG", error: `Message is too long (max ${maxChars} characters).` },
       { status: 400 }
     );
   }
 
   if (!process.env.OPENROUTER_API_KEY) {
-    // Still allow demo mode
     return Response.json({
       reply:
         "Mock AI (no OpenRouter API key configured yet).\n\n" +
-        "Budget for €1200/month:\n" +
+        "Budget for EUR 1200/month:\n" +
         "1. Housing: 40%\n" +
         "2. Food: 20%\n" +
         "3. Entertainment: 15%\n" +
@@ -79,15 +77,14 @@ export async function POST(req: Request) {
     });
 
     return Response.json({ reply: completion.choices[0]?.message?.content ?? "" });
-  } catch (err: any) {
-    const status = err?.status ?? err?.response?.status ?? 500;
+  } catch (error) {
+    const status = getErrorStatus(error);
     const code = mapStatusToCode(status);
 
     console.error("OpenRouter error (server-side):", {
       status,
       code,
-      message: err?.message,
-      data: err?.response?.data,
+      message: getErrorMessage(error, "Unknown provider error"),
     });
 
     return Response.json(

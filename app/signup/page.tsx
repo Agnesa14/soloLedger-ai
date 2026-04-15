@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../providers/AuthProvider";
+import { getErrorMessage } from "@/lib/errors";
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -29,26 +30,30 @@ export default function SignupPage() {
     setError("");
     setInfo("");
 
-    const n = name.trim();
-    const eTrim = email.trim();
+    const trimmedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
 
-    if (n.length < 2) return setError("Name must be at least 2 characters.");
-    if (!isValidEmail(eTrim)) return setError("Please enter a valid email address.");
-    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (trimmedName.length < 2) {
+      setError("Name must be at least 2 characters.");
+      return;
+    }
+    if (!isValidEmail(normalizedEmail)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
 
     setSubmitting(true);
     try {
-      await signUp({ email: eTrim, password, name: n });
+      await signUp({ email: normalizedEmail, password, name: trimmedName });
 
-      // With email confirmation ON, user must confirm via email before login works.
-      setInfo(
-        "Account created. Please check your email inbox (and spam) to confirm your account before logging in."
-      );
-
-      // Optional: take them to login screen with a hint
+      setInfo("Account created. Please confirm your email before logging in.");
       setTimeout(() => router.push("/login?checkEmail=1"), 800);
-    } catch (err: any) {
-      setError(err?.message ?? "Signup failed. Please try again.");
+    } catch (signUpError) {
+      setError(getErrorMessage(signUpError, "Signup failed. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -120,7 +125,7 @@ export default function SignupPage() {
             disabled={submitting}
             className="w-full rounded-xl bg-black py-3 text-sm font-medium text-white disabled:opacity-60"
           >
-            {submitting ? "Creating…" : "Create account"}
+            {submitting ? "Creating..." : "Create account"}
           </button>
 
           <button

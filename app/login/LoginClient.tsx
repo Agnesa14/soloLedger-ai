@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../providers/AuthProvider";
+import { getErrorMessage, hasMessage } from "@/lib/errors";
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -21,16 +22,11 @@ export default function LoginClient() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
 
-  const showCheckEmailHint = useMemo(
-    () => searchParams.get("checkEmail") === "1",
-    [searchParams]
-  );
+  const showCheckEmailHint = useMemo(() => searchParams.get("checkEmail") === "1", [searchParams]);
 
   useEffect(() => {
     if (showCheckEmailHint) {
-      setInfo(
-        "Check your email inbox (and spam) to confirm your account before logging in."
-      );
+      setInfo("Check your email inbox (and spam) to confirm your account before logging in.");
     }
   }, [showCheckEmailHint]);
 
@@ -43,9 +39,9 @@ export default function LoginClient() {
     setError("");
     setInfo("");
 
-    const eTrim = email.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
-    if (!isValidEmail(eTrim)) {
+    if (!isValidEmail(normalizedEmail)) {
       setError("Please enter a valid email address.");
       return;
     }
@@ -56,21 +52,17 @@ export default function LoginClient() {
 
     setSubmitting(true);
     try {
-      await signIn({ email: eTrim, password });
+      await signIn({ email: normalizedEmail, password });
       router.replace("/dashboard");
-    } catch (err: any) {
-      const msg = String(err?.message ?? "");
-
-      if (msg.toLowerCase().includes("email not confirmed")) {
-        setError(
-          "Email not confirmed. Please confirm your email first (check inbox/spam), then try logging in again."
-        );
-      } else if (msg.toLowerCase().includes("invalid login credentials")) {
+    } catch (signInError) {
+      if (hasMessage(signInError, "email not confirmed")) {
+        setError("Email not confirmed. Please confirm your email first, then try logging in again.");
+      } else if (hasMessage(signInError, "invalid login credentials")) {
         setError("Invalid email or password. Please try again.");
-      } else if (msg.toLowerCase().includes("too many requests")) {
+      } else if (hasMessage(signInError, "too many requests")) {
         setError("Too many attempts. Please wait a moment and try again.");
       } else {
-        setError(msg || "Login failed. Please try again.");
+        setError(getErrorMessage(signInError, "Login failed. Please try again."));
       }
     } finally {
       setSubmitting(false);
@@ -81,12 +73,8 @@ export default function LoginClient() {
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
       <div className="mx-auto max-w-md px-4 py-12">
         <header className="mb-6">
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
-            Login
-          </h1>
-          <p className="mt-2 text-sm text-slate-600">
-            Sign in to access your dashboard and AI tools.
-          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Login</h1>
+          <p className="mt-2 text-sm text-slate-600">Sign in to access your dashboard and AI tools.</p>
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
@@ -105,9 +93,7 @@ export default function LoginClient() {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-900">
-                Password
-              </label>
+              <label className="text-sm font-medium text-slate-900">Password</label>
               <input
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:shadow-[0_0_0_5px_rgba(15,23,42,0.08)]"
                 value={password}
@@ -136,7 +122,7 @@ export default function LoginClient() {
               disabled={submitting}
               className="w-full rounded-2xl bg-slate-900 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? "Signing in…" : "Login"}
+              {submitting ? "Signing in..." : "Login"}
             </button>
 
             <div className="flex flex-col gap-3 sm:flex-row">
@@ -158,8 +144,7 @@ export default function LoginClient() {
         </section>
 
         <p className="mt-6 text-center text-xs text-slate-500">
-          If you just signed up, you must confirm your email before you can log
-          in.
+          If you just signed up, you must confirm your email before you can log in.
         </p>
       </div>
     </main>
