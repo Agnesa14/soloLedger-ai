@@ -7,6 +7,11 @@ import { useAuth } from "../../providers/AuthProvider";
 import { getLocalDateInputValue } from "@/lib/dates";
 import { getErrorMessage } from "@/lib/errors";
 import {
+  buildFinancialSnapshot,
+  formatInsightCurrency,
+  formatInsightPercent,
+} from "@/lib/financialInsights";
+import {
   getMyMonthSummary,
   insertMyTransaction,
   loadMyRecentTransactions,
@@ -35,6 +40,30 @@ function Pill({ children, tone }: { children: React.ReactNode; tone: "green" | "
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>
       {children}
     </span>
+  );
+}
+
+function InsightCard({
+  title,
+  detail,
+  tone,
+}: {
+  title: string;
+  detail: string;
+  tone: "positive" | "warning" | "neutral";
+}) {
+  const cls =
+    tone === "positive"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : tone === "warning"
+        ? "border-amber-200 bg-amber-50 text-amber-900"
+        : "border-slate-200 bg-slate-50 text-slate-800";
+
+  return (
+    <article className={`rounded-2xl border p-4 ${cls}`}>
+      <div className="text-sm font-semibold">{title}</div>
+      <p className="mt-2 text-sm leading-6">{detail}</p>
+    </article>
   );
 }
 
@@ -121,7 +150,7 @@ export default function DashboardPage() {
 
         const [nextSummary, nextRecent] = await Promise.all([
           getMyMonthSummary(year, month),
-          loadMyRecentTransactions(12),
+          loadMyRecentTransactions(60),
         ]);
 
         if (cancelled) return;
@@ -154,6 +183,9 @@ export default function DashboardPage() {
 
   const formError = validateTransactionForm(form);
   const canSaveTransaction = !savingTransaction && !formError;
+  const visibleRecent = useMemo(() => recent.slice(0, 12), [recent]);
+  const insightSnapshot = useMemo(() => buildFinancialSnapshot(recent), [recent]);
+  const topCategories = useMemo(() => insightSnapshot.categoryBreakdown.slice(0, 4), [insightSnapshot]);
 
   if (loading) {
     return (
@@ -184,7 +216,7 @@ export default function DashboardPage() {
         date: form.date,
       });
 
-      setRecent((prev) => [row, ...prev].slice(0, 12));
+      setRecent((prev) => [row, ...prev].slice(0, 60));
       setSummary((prev) => {
         const base = prev ?? { income: 0, expenses: 0, net: 0 };
         const income = base.income + (form.type === "income" ? amount : 0);
@@ -291,6 +323,133 @@ export default function DashboardPage() {
         </div>
       </section>
 
+      <section className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">AI spending signals</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                {insightSnapshot.transactionCount > 0
+                  ? `Based on your last ${insightSnapshot.transactionCount} tracked transaction${insightSnapshot.transactionCount === 1 ? "" : "s"} across ${insightSnapshot.coverageDays} day${insightSnapshot.coverageDays === 1 ? "" : "s"}.`
+                  : "Start tracking transactions and the dashboard will surface real spending signals here."}
+              </p>
+            </div>
+
+            <Link
+              href="/"
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50"
+            >
+              Open AI copilot
+            </Link>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Savings rate
+              </div>
+              <div className="mt-2 text-2xl font-semibold text-slate-900">
+                {formatInsightPercent(insightSnapshot.savingsRate)}
+              </div>
+              <div className="mt-1 text-sm text-slate-600">
+                Target benchmark: {insightSnapshot.savingsTarget ? formatInsightCurrency(insightSnapshot.savingsTarget) : "Add income"}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Daily burn
+              </div>
+              <div className="mt-2 text-2xl font-semibold text-slate-900">
+                {formatInsightCurrency(insightSnapshot.averageDailyExpense)}
+              </div>
+              <div className="mt-1 text-sm text-slate-600">Average tracked expense per day</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Main pressure point
+              </div>
+              <div className="mt-2 text-2xl font-semibold text-slate-900">
+                {insightSnapshot.topExpenseCategory?.category ?? "Waiting for data"}
+              </div>
+              <div className="mt-1 text-sm text-slate-600">
+                {insightSnapshot.topExpenseCategory
+                  ? `${formatInsightCurrency(insightSnapshot.topExpenseCategory.amount)} of expense volume`
+                  : "Add expense categories to reveal the biggest lever"}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {insightSnapshot.highlights.map((highlight) => (
+              <InsightCard
+                key={highlight.id}
+                title={highlight.title}
+                detail={highlight.detail}
+                tone={highlight.tone}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
+          <h2 className="text-lg font-semibold text-slate-900">Category pressure map</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            This helps you see where a small change would create the biggest savings impact.
+          </p>
+
+          <div className="mt-5 space-y-3">
+            {topCategories.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm leading-6 text-slate-600">
+                Add some expense transactions and SoloLedger AI will highlight the categories with the most pressure.
+              </div>
+            ) : (
+              topCategories.map((category) => (
+                <div key={category.category} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-medium text-slate-900">{category.category}</div>
+                      <div className="text-sm text-slate-600">
+                        {category.transactions} transaction{category.transactions === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold text-slate-900">{formatInsightCurrency(category.amount)}</div>
+                      <div className="text-sm text-slate-600">
+                        {formatInsightPercent(category.shareOfExpenses)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
+                    <div
+                      className="h-full rounded-full bg-slate-900"
+                      style={{ width: `${Math.max(8, Math.round(category.shareOfExpenses * 100))}%` }}
+                    />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-sm font-semibold text-slate-900">AI playbooks</div>
+            <div className="mt-3 flex flex-col gap-2">
+              {insightSnapshot.suggestedPrompts.map((prompt) => (
+                <Link
+                  key={prompt}
+                  href={{ pathname: "/", query: { prompt } }}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 transition hover:bg-slate-50"
+                >
+                  {prompt}
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">Recent transactions</h2>
@@ -309,14 +468,14 @@ export default function DashboardPage() {
             </thead>
 
             <tbody>
-              {recent.length === 0 ? (
+              {visibleRecent.length === 0 ? (
                 <tr>
                   <td className="py-4 text-slate-500" colSpan={4}>
                     No transactions yet.
                   </td>
                 </tr>
               ) : (
-                recent.map((transaction) => {
+                visibleRecent.map((transaction) => {
                   const isExpense = transaction.type === "expense";
                   return (
                     <tr key={transaction.id} className="border-b border-slate-100 hover:bg-slate-50/60">

@@ -13,6 +13,8 @@ const client = new OpenAI({
   },
 });
 
+const defaultModel = process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.1-8b-instruct";
+
 type ApiErrorCode =
   | "EMPTY_MESSAGE"
   | "TOO_LONG"
@@ -33,8 +35,9 @@ function mapStatusToCode(status: number): ApiErrorCode {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { message?: string };
+  const body = (await req.json().catch(() => ({}))) as { message?: string; context?: string };
   const message = String(body?.message ?? "").trim();
+  const context = String(body?.context ?? "").trim();
 
   if (!message) {
     return Response.json({ code: "EMPTY_MESSAGE", error: "Message is empty." }, { status: 400 });
@@ -48,30 +51,46 @@ export async function POST(req: Request) {
     );
   }
 
+  const sanitizedContext = context.slice(0, 4_000);
+
   if (!process.env.OPENROUTER_API_KEY) {
     return Response.json({
       reply:
-        "Mock AI (no OpenRouter API key configured yet).\n\n" +
-        "Budget for EUR 1200/month:\n" +
-        "1. Housing: 40%\n" +
-        "2. Food: 20%\n" +
-        "3. Entertainment: 15%\n" +
-        "4. Savings: 20%\n" +
-        "5. Miscellaneous: 5%\n",
+        "Mock SoloLedger AI (no OpenRouter API key configured yet).\n\n" +
+        (sanitizedContext
+          ? "I can already see your app is sending financial context, so once you add the API key the assistant will answer with real personalized coaching.\n\n"
+          : "No financial context was attached yet, so this is still a generic reply.\n\n") +
+        "Suggested structure for a healthy monthly plan:\n" +
+        "1. Essentials: 50%\n" +
+        "2. Lifestyle: 20%\n" +
+        "3. Savings: 20%\n" +
+        "4. Buffer: 10%\n\n" +
+        "Ask the assistant things like: 'Where am I overspending?' or 'How do I save 150 EUR this month?'",
     });
   }
 
   try {
     const completion = await client.chat.completions.create({
-      model: "meta-llama/llama-3.1-8b-instruct",
+      model: defaultModel,
       temperature: 0.3,
       max_tokens: 500,
       messages: [
         {
           role: "system",
           content:
-            "You are a helpful assistant. Reply clearly and briefly. If the user asks for a budget, return 5 categories with percentages that add up to 100%.",
+            "You are SoloLedger AI, a pragmatic financial copilot for budgeting, spending control, and savings habits. Reply clearly, professionally, and with concrete actions in EUR when useful. If financial context is provided, use it and cite the numbers you rely on. If context is missing or incomplete, say that briefly instead of pretending. Prefer actionable advice over theory. If the user asks for a budget, return 5 categories with percentages that add up to 100%. End with one practical next step.",
         },
+        ...(sanitizedContext
+          ? [
+              {
+                role: "system" as const,
+                content:
+                  "User financial context from SoloLedger:\n" +
+                  sanitizedContext +
+                  "\nUse this context to personalize your response, but do not mention data that is not present here.",
+              },
+            ]
+          : []),
         { role: "user", content: message },
       ],
     });

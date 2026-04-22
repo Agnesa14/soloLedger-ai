@@ -1,16 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./providers/AuthProvider";
 import { getErrorMessage, hasMessage } from "@/lib/errors";
+import {
+  buildFinancialSnapshot,
+  formatInsightCurrency,
+  formatInsightPercent,
+  type FinancialSnapshot,
+} from "@/lib/financialInsights";
 import {
   clearMyChatMessages,
   insertMyChatMessage,
   loadMyChatMessages,
   type ChatRole,
 } from "../lib/chatMessages";
+import { loadMyRecentTransactions } from "@/lib/transactions";
 
 type ChatApiOk = { reply: string };
 type ChatApiErr = { error?: string; code?: string };
@@ -60,8 +67,9 @@ function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
-export default function Home() {
+function HomePageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading, signOut } = useAuth();
 
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -69,8 +77,17 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
+  const [contextError, setContextError] = useState("");
+  const [contextLoading, setContextLoading] = useState(false);
+  const [snapshot, setSnapshot] = useState<FinancialSnapshot | null>(null);
 
   const canUse = useMemo(() => !authLoading && !!user, [authLoading, user]);
+  const prefillPrompt = useMemo(() => searchParams.get("prompt")?.trim() ?? "", [searchParams]);
+
+  useEffect(() => {
+    if (!prefillPrompt) return;
+    setInput((current) => (current.trim() ? current : prefillPrompt));
+  }, [prefillPrompt]);
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
@@ -81,34 +98,48 @@ export default function Home() {
 
     let cancelled = false;
 
-    async function loadHistory() {
+    async function loadWorkspaceData() {
       setError("");
       setInfo("");
+      setContextError("");
+      setContextLoading(true);
 
-      try {
-        const rows = await loadMyChatMessages(300);
-        if (cancelled) return;
+      const [historyResult, transactionsResult] = await Promise.allSettled([
+        loadMyChatMessages(300),
+        loadMyRecentTransactions(60),
+      ]);
 
+      if (cancelled) return;
+
+      if (historyResult.status === "fulfilled") {
+        const rows = historyResult.value;
         setMessages(
           rows.map((row) => ({ role: row.role, content: row.content, created_at: row.created_at }))
         );
 
         if (rows.length === 0) setInfo("No history yet. Send your first message.");
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(getErrorMessage(loadError, "Failed to load chat history."));
-        }
+      } else {
+        setError(getErrorMessage(historyResult.reason, "Failed to load chat history."));
       }
+
+      if (transactionsResult.status === "fulfilled") {
+        setSnapshot(buildFinancialSnapshot(transactionsResult.value));
+      } else {
+        setSnapshot(null);
+        setContextError("AI is running without transaction context right now. Financial answers may be more generic.");
+      }
+
+      setContextLoading(false);
     }
 
-    void loadHistory();
+    void loadWorkspaceData();
 
     return () => {
       cancelled = true;
     };
   }, [canUse]);
 
-  async function callChatApi(message: string) {
+  async function callChatApi(message: string, context?: string) {
     const controller = new AbortController();
     const timeoutMs = 25_000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -117,7 +148,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, context }),
         signal: controller.signal,
       });
 
@@ -177,7 +208,7 @@ export default function Home() {
 
       setInput("");
 
-      const reply = await callChatApi(text);
+      const reply = await callChatApi(text, snapshot?.contextSummary);
       if (!reply) throw new Error("Empty assistant reply.");
 
       await insertMyChatMessage("assistant", reply);
@@ -232,6 +263,7 @@ export default function Home() {
   const isEmpty = trimmed.length === 0;
   const isTooLong = trimmed.length > charLimit;
   const canSubmit = !busy && !isEmpty && !isTooLong;
+  const hasFinancialContext = (snapshot?.transactionCount ?? 0) > 0;
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
@@ -240,7 +272,7 @@ export default function Home() {
           <div>
             <h1 className="text-4xl font-semibold tracking-tight text-slate-900">SoloLedger AI</h1>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Logged in as <span className="font-medium text-slate-900">{user.email}</span>
+              Your financial copilot is active for <span className="font-medium text-slate-900">{user.email}</span>
             </p>
           </div>
 
@@ -273,6 +305,123 @@ export default function Home() {
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
+          <div className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">AI money context</div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    {contextLoading
+                      ? "Loading your latest transaction patterns..."
+                      : snapshot && hasFinancialContext
+                        ? `Using ${snapshot.transactionCount} recent records across ${snapshot.coverageDays} day(s).`
+                        : "Track transactions to unlock personalized coaching."}
+                  </div>
+                </div>
+
+                {hasFinancialContext ? (
+                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                    Personalized
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                    Learning mode
+                  </span>
+                )}
+              </div>
+
+              {hasFinancialContext && snapshot ? (
+                <>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-white bg-white p-3">
+                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                        Net tracked
+                      </div>
+                      <div className="mt-2 text-xl font-semibold text-slate-900">
+                        {formatInsightCurrency(snapshot.net)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white bg-white p-3">
+                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                        Savings rate
+                      </div>
+                      <div className="mt-2 text-xl font-semibold text-slate-900">
+                        {formatInsightPercent(snapshot.savingsRate)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white bg-white p-3">
+                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                        Daily burn
+                      </div>
+                      <div className="mt-2 text-xl font-semibold text-slate-900">
+                        {formatInsightCurrency(snapshot.averageDailyExpense)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {snapshot.highlights.slice(0, 2).map((highlight) => (
+                      <div
+                        key={highlight.id}
+                        className={[
+                          "rounded-2xl border p-3 text-sm",
+                          highlight.tone === "positive"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                            : highlight.tone === "warning"
+                              ? "border-amber-200 bg-amber-50 text-amber-900"
+                              : "border-slate-200 bg-white text-slate-800",
+                        ].join(" ")}
+                      >
+                        <div className="font-semibold">{highlight.title}</div>
+                        <div className="mt-1 leading-6">{highlight.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm leading-6 text-slate-600">
+                  Add a few income and expense records and SoloLedger AI will start answering with personal spending signals instead of generic budgeting tips.
+                </div>
+              )}
+
+              {contextError ? (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  {contextError}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="text-sm font-semibold text-slate-900">Suggested prompts</div>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                Use these to turn raw data into concrete savings actions.
+              </p>
+
+              <div className="mt-4 flex flex-col gap-2">
+                {(snapshot?.suggestedPrompts ?? [
+                  "Create a simple monthly budget for me.",
+                  "Where should I cut costs first?",
+                  "How can I save more consistently each month?",
+                ]).map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => {
+                      setInput(prompt);
+                      setError("");
+                      setInfo("");
+                    }}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm text-slate-800 transition hover:border-slate-300 hover:bg-white"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-slate-900">Prompt</label>
@@ -286,7 +435,7 @@ export default function Home() {
               onChange={(e) => setInput(e.target.value)}
               rows={5}
               maxLength={charLimit}
-              placeholder="Type your question here..."
+              placeholder="Ask for a budget, savings plan, spending diagnosis, or a category-by-category review..."
               className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:shadow-[0_0_0_5px_rgba(15,23,42,0.08)]"
               disabled={busy}
             />
@@ -365,5 +514,17 @@ export default function Home() {
         </section>
       </div>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <main className="grid min-h-screen place-items-center bg-gray-50 text-gray-600">Loading...</main>
+      }
+    >
+      <HomePageContent />
+    </Suspense>
   );
 }
