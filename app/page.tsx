@@ -11,13 +11,14 @@ import {
   formatInsightPercent,
   type FinancialSnapshot,
 } from "@/lib/financialInsights";
+import { buildPlanningSnapshot, loadMyBudgets, loadMySavingsGoals, type PlanningSnapshot } from "@/lib/planning";
 import {
   clearMyChatMessages,
   insertMyChatMessage,
   loadMyChatMessages,
   type ChatRole,
 } from "../lib/chatMessages";
-import { loadMyRecentTransactions } from "@/lib/transactions";
+import { loadMyRecentTransactions, loadMyTransactionsForMonth } from "@/lib/transactions";
 
 type ChatApiOk = { reply: string };
 type ChatApiErr = { error?: string; code?: string };
@@ -80,6 +81,7 @@ function HomePageContent() {
   const [contextError, setContextError] = useState("");
   const [contextLoading, setContextLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<FinancialSnapshot | null>(null);
+  const [planningSnapshot, setPlanningSnapshot] = useState<PlanningSnapshot | null>(null);
 
   const canUse = useMemo(() => !authLoading && !!user, [authLoading, user]);
   const prefillPrompt = useMemo(() => searchParams.get("prompt")?.trim() ?? "", [searchParams]);
@@ -104,10 +106,15 @@ function HomePageContent() {
       setContextError("");
       setContextLoading(true);
 
-      const [historyResult, transactionsResult] = await Promise.allSettled([
-        loadMyChatMessages(300),
-        loadMyRecentTransactions(60),
-      ]);
+      const now = new Date();
+      const [historyResult, transactionsResult, monthTransactionsResult, budgetsResult, goalsResult] =
+        await Promise.allSettled([
+          loadMyChatMessages(300),
+          loadMyRecentTransactions(60),
+          loadMyTransactionsForMonth(now.getFullYear(), now.getMonth() + 1),
+          loadMyBudgets(),
+          loadMySavingsGoals(),
+        ]);
 
       if (cancelled) return;
 
@@ -127,6 +134,27 @@ function HomePageContent() {
       } else {
         setSnapshot(null);
         setContextError("AI is running without transaction context right now. Financial answers may be more generic.");
+      }
+
+      if (
+        monthTransactionsResult.status === "fulfilled" &&
+        budgetsResult.status === "fulfilled" &&
+        goalsResult.status === "fulfilled"
+      ) {
+        setPlanningSnapshot(
+          buildPlanningSnapshot({
+            year: now.getFullYear(),
+            month: now.getMonth() + 1,
+            transactions: monthTransactionsResult.value,
+            budgets: budgetsResult.value,
+            goals: goalsResult.value,
+          })
+        );
+      } else {
+        setPlanningSnapshot(null);
+        setContextError((current) =>
+          current || "AI is missing some planning context, so budget and goal advice may be less precise."
+        );
       }
 
       setContextLoading(false);
@@ -208,7 +236,11 @@ function HomePageContent() {
 
       setInput("");
 
-      const reply = await callChatApi(text, snapshot?.contextSummary);
+      const combinedContext = [snapshot?.contextSummary, planningSnapshot?.contextSummary]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const reply = await callChatApi(text, combinedContext || undefined);
       if (!reply) throw new Error("Empty assistant reply.");
 
       await insertMyChatMessage("assistant", reply);
@@ -264,6 +296,18 @@ function HomePageContent() {
   const isTooLong = trimmed.length > charLimit;
   const canSubmit = !busy && !isEmpty && !isTooLong;
   const hasFinancialContext = (snapshot?.transactionCount ?? 0) > 0;
+  const hasPlanningContext =
+    !!planningSnapshot &&
+    (planningSnapshot.budgetProgress.length > 0 || planningSnapshot.goalProgress.length > 0);
+  const suggestedPrompts = [
+    ...new Set([
+      ...(planningSnapshot?.suggestedPrompts ?? []),
+      ...(snapshot?.suggestedPrompts ?? []),
+      "Create a simple monthly budget for me.",
+      "Where should I cut costs first?",
+      "How can I save more consistently each month?",
+    ]),
+  ].slice(0, 5);
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-white">
@@ -314,7 +358,9 @@ function HomePageContent() {
                     {contextLoading
                       ? "Loading your latest transaction patterns..."
                       : snapshot && hasFinancialContext
-                        ? `Using ${snapshot.transactionCount} recent records across ${snapshot.coverageDays} day(s).`
+                        ? `Using ${snapshot.transactionCount} recent records across ${snapshot.coverageDays} day(s), plus ${
+                            hasPlanningContext ? "your budgets and savings goals" : "available spending data"
+                          }.`
                         : "Track transactions to unlock personalized coaching."}
                   </div>
                 </div>
@@ -361,6 +407,37 @@ function HomePageContent() {
                     </div>
                   </div>
 
+                  {planningSnapshot ? (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-white bg-white p-3">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          Budgets at risk
+                        </div>
+                        <div className="mt-2 text-xl font-semibold text-slate-900">
+                          {planningSnapshot.budgetsAtRisk + planningSnapshot.budgetsOverLimit}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white bg-white p-3">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          Active goals
+                        </div>
+                        <div className="mt-2 text-xl font-semibold text-slate-900">
+                          {planningSnapshot.activeGoalCount}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white bg-white p-3">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          Goal load
+                        </div>
+                        <div className="mt-2 text-xl font-semibold text-slate-900">
+                          {formatInsightCurrency(planningSnapshot.totalMonthlyGoalTarget)}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     {snapshot.highlights.slice(0, 2).map((highlight) => (
                       <div
@@ -378,6 +455,21 @@ function HomePageContent() {
                         <div className="mt-1 leading-6">{highlight.detail}</div>
                       </div>
                     ))}
+
+                    {planningSnapshot && planningSnapshot.goalProgress[0] ? (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-800">
+                        <div className="font-semibold text-slate-900">
+                          Goal spotlight: {planningSnapshot.goalProgress[0].name}
+                        </div>
+                        <div className="mt-1 leading-6">
+                          {formatInsightCurrency(planningSnapshot.goalProgress[0].current_amount)} saved of{" "}
+                          {formatInsightCurrency(planningSnapshot.goalProgress[0].target_amount)}. Monthly pace:{" "}
+                          {planningSnapshot.goalProgress[0].effectiveMonthlyTarget
+                            ? formatInsightCurrency(planningSnapshot.goalProgress[0].effectiveMonthlyTarget)
+                            : "not set"}.
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </>
               ) : (
@@ -400,11 +492,7 @@ function HomePageContent() {
               </p>
 
               <div className="mt-4 flex flex-col gap-2">
-                {(snapshot?.suggestedPrompts ?? [
-                  "Create a simple monthly budget for me.",
-                  "Where should I cut costs first?",
-                  "How can I save more consistently each month?",
-                ]).map((prompt) => (
+                {suggestedPrompts.map((prompt) => (
                   <button
                     key={prompt}
                     type="button"

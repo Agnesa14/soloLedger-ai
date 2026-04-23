@@ -9,7 +9,10 @@ SoloLedger AI is a Next.js + TypeScript app for personal finance tracking with a
 - Authenticates users with Supabase Auth
 - Stores chat history in Supabase Postgres
 - Stores personal income and expense transactions
+- Stores monthly category budgets and savings goals
 - Shows monthly income, expense, and net summary cards
+- Compares current spending against category guardrails
+- Tracks savings goal progress and monthly funding pressure
 - Protects user data with Row Level Security rules
 
 ## Tech stack
@@ -48,8 +51,18 @@ npm run dev
 
 4. Open `http://localhost:3000`
 
+## Supabase schema
+
+Run the SQL migrations in your Supabase project before using planning features:
+
+```sql
+-- Run this file in the Supabase SQL editor
+-- supabase/migrations/20260422_add_budgets_and_savings_goals.sql
+```
+
 ## Notes
 
 - If `OPENROUTER_API_KEY` is missing, the app falls back to a mock AI response for easier local demos.
 - For production on Vercel, add the same environment variables in Project Settings -> Environment Variables.
-- Make sure your Supabase project includes the `chat_messages` and `transactions` tables with RLS enabled.
+- Make sure your Supabase project includes the `chat_messages`, `transactions`, `budgets`, and `savings_goals` tables with RLS enabled.
+- The repo now includes a migration at `supabase/migrations/20260422_add_budgets_and_savings_goals.sql` for the new planning layer.

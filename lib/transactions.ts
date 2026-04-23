@@ -19,6 +19,16 @@ type TransactionSummaryRow = {
   amount: number | string | null;
 };
 
+function getMonthRange(year: number, month1to12: number) {
+  const start = new Date(Date.UTC(year, month1to12 - 1, 1));
+  const end = new Date(Date.UTC(year, month1to12, 1));
+
+  return {
+    from: start.toISOString().slice(0, 10),
+    toExclusive: end.toISOString().slice(0, 10),
+  };
+}
+
 export async function loadMyRecentTransactions(limit = 10) {
   const user = await getCurrentUserOrThrow();
 
@@ -34,14 +44,26 @@ export async function loadMyRecentTransactions(limit = 10) {
   return (data ?? []) as TransactionRow[];
 }
 
+export async function loadMyTransactionsForMonth(year: number, month1to12: number) {
+  const user = await getCurrentUserOrThrow();
+  const { from, toExclusive } = getMonthRange(year, month1to12);
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("id,user_id,type,amount,category,note,date,created_at")
+    .eq("user_id", user.id)
+    .gte("date", from)
+    .lt("date", toExclusive)
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as TransactionRow[];
+}
+
 export async function getMyMonthSummary(year: number, month1to12: number) {
   const user = await getCurrentUserOrThrow();
-
-  const start = new Date(Date.UTC(year, month1to12 - 1, 1));
-  const end = new Date(Date.UTC(year, month1to12, 1)); // next month
-
-  const from = start.toISOString().slice(0, 10);
-  const toExclusive = end.toISOString().slice(0, 10);
+  const { from, toExclusive } = getMonthRange(year, month1to12);
 
   const { data, error } = await supabase
     .from("transactions")
