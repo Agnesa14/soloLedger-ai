@@ -70,3 +70,9 @@ Run the SQL migrations in your Supabase project before using planning features:
 - Make sure your Supabase project includes the `chat_messages`, `transactions`, `budgets`, `savings_goals`, and `recurring_transactions` tables with RLS enabled.
 - The repo now includes a migration at `supabase/migrations/20260422_add_budgets_and_savings_goals.sql` for the new planning layer.
 - The repo also includes `supabase/migrations/20260425_add_recurring_transactions.sql` for the recurring planner.
+
+## Demo readiness
+
+- Live demo target: `https://solo-ledger-ai.vercel.app/`
+- Presentation plan: [docs/demo-plan.md](docs/demo-plan.md)
+- For the strongest demo, use an account with seeded transactions, budgets, savings goals, and recurring items so the dashboard and AI assistant show meaningful results.
