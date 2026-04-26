@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../providers/AuthProvider";
@@ -8,8 +8,6 @@ import { getLocalDateInputValue } from "@/lib/dates";
 import { getErrorMessage } from "@/lib/errors";
 import {
   buildFinancialSnapshot,
-  formatInsightCurrency,
-  formatInsightPercent,
 } from "@/lib/financialInsights";
 import {
   buildPlanningSnapshot,
@@ -24,6 +22,15 @@ import {
   upsertMySavingsGoal,
 } from "@/lib/planning";
 import {
+  buildRecurringSnapshot,
+  deleteMyRecurringTransaction,
+  loadMyRecurringTransactions,
+  logMyRecurringTransaction,
+  type RecurringFrequency,
+  type RecurringTransactionRow,
+  upsertMyRecurringTransaction,
+} from "@/lib/recurring";
+import {
   getMyMonthSummary,
   insertMyTransaction,
   loadMyRecentTransactions,
@@ -31,6 +38,7 @@ import {
   type TransactionRow,
   type TransactionType,
 } from "@/lib/transactions";
+import { buildWeeklyPulseSnapshot } from "@/lib/weeklyPulse";
 import { Modal } from "@/components/ui/Modal";
 
 function formatEUR(amount: number) {
@@ -50,7 +58,7 @@ function Pill({ children, tone }: { children: React.ReactNode; tone: "green" | "
         : "border-slate-200 bg-slate-50 text-slate-700";
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>
+    <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-medium ${cls}`}>
       {children}
     </span>
   );
@@ -73,33 +81,9 @@ function StatusBadge({
           : "border-slate-200 bg-slate-50 text-slate-700";
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>
+    <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-medium ${cls}`}>
       {children}
     </span>
-  );
-}
-
-function InsightCard({
-  title,
-  detail,
-  tone,
-}: {
-  title: string;
-  detail: string;
-  tone: "positive" | "warning" | "neutral";
-}) {
-  const cls =
-    tone === "positive"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-      : tone === "warning"
-        ? "border-amber-200 bg-amber-50 text-amber-900"
-        : "border-slate-200 bg-slate-50 text-slate-800";
-
-  return (
-    <article className={`rounded-2xl border p-4 ${cls}`}>
-      <div className="text-sm font-semibold">{title}</div>
-      <p className="mt-2 text-sm leading-6">{detail}</p>
-    </article>
   );
 }
 
@@ -108,6 +92,8 @@ type DashboardSummary = {
   expenses: number;
   net: number;
 };
+
+type DashboardView = "overview" | "plan" | "automation";
 
 type TransactionFormState = {
   type: TransactionType;
@@ -134,6 +120,19 @@ type SavingsGoalFormState = {
   status: SavingsGoalStatus;
 };
 
+type RecurringFormState = {
+  id?: number;
+  name: string;
+  type: TransactionType;
+  amount: string;
+  category: string;
+  note: string;
+  frequency: RecurringFrequency;
+  cadence: string;
+  nextDueDate: string;
+  active: boolean;
+};
+
 const initialFormState = (): TransactionFormState => ({
   type: "expense",
   amount: "",
@@ -155,6 +154,18 @@ const initialGoalFormState = (): SavingsGoalFormState => ({
   monthlyContributionTarget: "",
   targetDate: "",
   status: "active",
+});
+
+const initialRecurringFormState = (): RecurringFormState => ({
+  name: "",
+  type: "expense",
+  amount: "",
+  category: "",
+  note: "",
+  frequency: "monthly",
+  cadence: "1",
+  nextDueDate: getLocalDateInputValue(),
+  active: true,
 });
 
 function validateTransactionForm(form: TransactionFormState) {
@@ -215,6 +226,29 @@ function validateGoalForm(form: SavingsGoalFormState) {
   return "";
 }
 
+function validateRecurringForm(form: RecurringFormState) {
+  const amount = Number(form.amount);
+  const cadence = Number(form.cadence);
+
+  if (!form.name.trim()) {
+    return "Name is required.";
+  }
+  if (!form.category.trim()) {
+    return "Category is required.";
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return "Amount must be greater than 0.";
+  }
+  if (!Number.isFinite(cadence) || cadence <= 0 || !Number.isInteger(cadence)) {
+    return "Cadence must be a whole number greater than 0.";
+  }
+  if (!form.nextDueDate) {
+    return "Next due date is required.";
+  }
+
+  return "";
+}
+
 function sortBudgets(rows: BudgetRow[]) {
   return [...rows].sort((left, right) => left.category.localeCompare(right.category));
 }
@@ -236,6 +270,15 @@ function sortGoals(rows: SavingsGoalRow[]) {
   });
 }
 
+function sortRecurring(rows: RecurringTransactionRow[]) {
+  return [...rows].sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    const dueDiff = left.next_due_date.localeCompare(right.next_due_date);
+    if (dueDiff !== 0) return dueDiff;
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function formatTargetDate(value: string | null) {
   if (!value) return "No target date";
 
@@ -249,40 +292,40 @@ function formatTargetDate(value: string | null) {
   }).format(date);
 }
 
-export default function DashboardPage() {
+function formatRecurringFrequency(frequency: RecurringFrequency, cadence: number) {
+  const unit = frequency === "weekly" ? "week" : "month";
+  return cadence === 1 ? `Every ${unit}` : `Every ${cadence} ${unit}s`;
+}
+
+export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const router = useRouter();
-  const { user, loading, signOut } = useAuth();
-
-  const displayName = useMemo(() => {
-    const metadata = user?.user_metadata;
-    if (metadata && typeof metadata === "object" && "name" in metadata) {
-      const name = metadata.name;
-      if (typeof name === "string" && name.trim()) return name.trim();
-    }
-
-    return user?.email || "User";
-  }, [user]);
+  const { user, loading } = useAuth();
 
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [savingTransaction, setSavingTransaction] = useState(false);
   const [savingBudget, setSavingBudget] = useState(false);
   const [savingGoal, setSavingGoal] = useState(false);
+  const [savingRecurring, setSavingRecurring] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [planningError, setPlanningError] = useState("");
+  const [recurringError, setRecurringError] = useState("");
 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [recent, setRecent] = useState<TransactionRow[]>([]);
   const [monthTransactions, setMonthTransactions] = useState<TransactionRow[]>([]);
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
   const [goals, setGoals] = useState<SavingsGoalRow[]>([]);
+  const [recurringItems, setRecurringItems] = useState<RecurringTransactionRow[]>([]);
 
   const [openAdd, setOpenAdd] = useState(false);
   const [openBudgetModal, setOpenBudgetModal] = useState(false);
   const [openGoalModal, setOpenGoalModal] = useState(false);
+  const [openRecurringModal, setOpenRecurringModal] = useState(false);
   const [form, setForm] = useState<TransactionFormState>(initialFormState());
   const [budgetForm, setBudgetForm] = useState<BudgetFormState>(initialBudgetFormState());
   const [goalForm, setGoalForm] = useState<SavingsGoalFormState>(initialGoalFormState());
+  const [recurringForm, setRecurringForm] = useState<RecurringFormState>(initialRecurringFormState());
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -298,18 +341,27 @@ export default function DashboardPage() {
       setError("");
       setInfo("");
       setPlanningError("");
+      setRecurringError("");
 
       const now = new Date();
       const year = now.getFullYear();
       const month = now.getMonth() + 1;
 
-      const [summaryResult, recentResult, monthTransactionsResult, budgetsResult, goalsResult] =
+      const [
+        summaryResult,
+        recentResult,
+        monthTransactionsResult,
+        budgetsResult,
+        goalsResult,
+        recurringResult,
+      ] =
         await Promise.allSettled([
           getMyMonthSummary(year, month),
           loadMyRecentTransactions(60),
           loadMyTransactionsForMonth(year, month),
           loadMyBudgets(),
           loadMySavingsGoals(),
+          loadMyRecurringTransactions(),
         ]);
 
       if (cancelled) return;
@@ -362,6 +414,15 @@ export default function DashboardPage() {
         setPlanningError("Planning tools are unavailable until the new Supabase budgets/goals tables are ready.");
       }
 
+      if (recurringResult.status === "fulfilled") {
+        setRecurringItems(sortRecurring(recurringResult.value));
+      } else {
+        setRecurringItems([]);
+        setRecurringError(
+          "Recurring planner is unavailable until the new Supabase recurring_transactions table is ready."
+        );
+      }
+
       if (!cancelled) setDashboardLoading(false);
     }
 
@@ -375,16 +436,30 @@ export default function DashboardPage() {
   const formError = validateTransactionForm(form);
   const budgetFormError = validateBudgetForm(budgetForm);
   const goalFormError = validateGoalForm(goalForm);
+  const recurringFormError = validateRecurringForm(recurringForm);
   const canSaveTransaction = !savingTransaction && !formError;
   const canSaveBudget = !savingBudget && !budgetFormError;
   const canSaveGoal = !savingGoal && !goalFormError;
+  const canSaveRecurring = !savingRecurring && !recurringFormError;
+  const activeView = view;
   const currentDate = new Date();
+  const todayDateKey = getLocalDateInputValue(currentDate);
   const currentYear = currentDate.getFullYear();
   const currentMonth = currentDate.getMonth() + 1;
   const currentMonthKey = `${currentYear}-${String(currentMonth).padStart(2, "0")}`;
+  const currentMonthLabel = new Intl.DateTimeFormat("en-GB", {
+    month: "long",
+    year: "numeric",
+  }).format(currentDate);
+  const monthlyIncome = summary?.income ?? 0;
+  const monthlyExpenses = summary?.expenses ?? 0;
+  const monthlyNet = summary?.net ?? 0;
+  const hasTransactions = recent.length > 0;
+  const hasBudgets = budgets.length > 0;
+  const hasGoals = goals.length > 0;
+  const hasRecurringItems = recurringItems.length > 0;
   const visibleRecent = useMemo(() => recent.slice(0, 12), [recent]);
   const insightSnapshot = useMemo(() => buildFinancialSnapshot(recent), [recent]);
-  const topCategories = useMemo(() => insightSnapshot.categoryBreakdown.slice(0, 4), [insightSnapshot]);
   const planningSnapshot = useMemo(
     () =>
       buildPlanningSnapshot({
@@ -396,9 +471,107 @@ export default function DashboardPage() {
       }),
     [currentMonth, currentYear, monthTransactions, budgets, goals]
   );
+  const recurringSnapshot = useMemo(() => buildRecurringSnapshot(recurringItems), [recurringItems]);
+  const weeklyPulse = useMemo(() => buildWeeklyPulseSnapshot(recent, recurringItems), [recent, recurringItems]);
   const aiPlaybooks = useMemo(() => {
-    return [...new Set([...planningSnapshot.suggestedPrompts, ...insightSnapshot.suggestedPrompts])].slice(0, 5);
-  }, [planningSnapshot.suggestedPrompts, insightSnapshot.suggestedPrompts]);
+    return [
+      ...new Set([
+        ...planningSnapshot.suggestedPrompts,
+        ...recurringSnapshot.suggestedPrompts,
+        ...weeklyPulse.suggestedPrompts,
+        ...insightSnapshot.suggestedPrompts,
+      ]),
+    ].slice(0, 6);
+  }, [
+    planningSnapshot.suggestedPrompts,
+    recurringSnapshot.suggestedPrompts,
+    weeklyPulse.suggestedPrompts,
+    insightSnapshot.suggestedPrompts,
+  ]);
+  const leadPrompt =
+    aiPlaybooks[0] ?? "Review my latest spending and give me one concrete action for this week.";
+  const recentFeed = useMemo(() => visibleRecent.slice(0, 6), [visibleRecent]);
+  const upcomingRecurring = useMemo(() => recurringSnapshot.upcoming.slice(0, 6), [recurringSnapshot.upcoming]);
+  const focusItems = useMemo(() => {
+    const next: string[] = [];
+
+    if (planningSnapshot.budgetsOverLimit > 0) {
+      next.push(`${planningSnapshot.budgetsOverLimit} budget ${planningSnapshot.budgetsOverLimit === 1 ? "is" : "are"} already over limit.`);
+    } else if (planningSnapshot.budgetsAtRisk > 0) {
+      next.push(`${planningSnapshot.budgetsAtRisk} budget ${planningSnapshot.budgetsAtRisk === 1 ? "is" : "are"} close to the limit.`);
+    }
+
+    if (weeklyPulse.currentWeekNet < 0) {
+      next.push(`This week's net cash flow is ${formatEUR(weeklyPulse.currentWeekNet)}.`);
+    } else if (weeklyPulse.currentWeekNet > 0) {
+      next.push(`This week is currently positive by ${formatEUR(weeklyPulse.currentWeekNet)}.`);
+    }
+
+    if (recurringSnapshot.dueThisWeekCount > 0) {
+      next.push(`${recurringSnapshot.dueThisWeekCount} recurring item${recurringSnapshot.dueThisWeekCount === 1 ? "" : "s"} need attention this week.`);
+    }
+
+    if (next.length === 0) {
+      next.push("Your dashboard is calm right now. Keep tracking to maintain a clear picture.");
+    }
+
+    return next.slice(0, 3);
+  }, [
+    planningSnapshot.budgetsAtRisk,
+    planningSnapshot.budgetsOverLimit,
+    recurringSnapshot.dueThisWeekCount,
+    weeklyPulse.currentWeekNet,
+  ]);
+  const setupChecklist = [
+    {
+      key: "transactions",
+      done: hasTransactions,
+      title: "Add your first income or expense",
+      detail: "This gives the dashboard real numbers to work with.",
+      action: "Add transaction",
+      onClick: () => {
+        setForm(initialFormState());
+        setOpenAdd(true);
+      },
+    },
+    {
+      key: "budget",
+      done: hasBudgets,
+      title: "Create at least one monthly budget",
+      detail: "Budgets make it easier to see when spending is drifting.",
+      action: "Add budget",
+      onClick: () => openBudgetEditor(),
+    },
+    {
+      key: "goal",
+      done: hasGoals,
+      title: "Create a savings goal",
+      detail: "Goals turn spare money into a clear plan.",
+      action: "Add goal",
+      onClick: () => openGoalEditor(),
+    },
+    {
+      key: "recurring",
+      done: hasRecurringItems,
+      title: "Add recurring bills or income",
+      detail: "Track rent, salary, subscriptions, or tax transfers in one place.",
+      action: "Add recurring",
+      onClick: () => openRecurringEditor(),
+    },
+  ];
+  const setupRemainingCount = setupChecklist.filter((item) => !item.done).length;
+  const pageHeading =
+    activeView === "overview"
+      ? "Overview"
+      : activeView === "plan"
+        ? "Planning"
+        : "Recurring";
+  const pageDescription =
+    activeView === "overview"
+      ? "Start with the essentials: current balance, this week, and the next best action for your money."
+      : activeView === "plan"
+        ? "Manage budgets and savings goals in a way that stays clear even for first-time users."
+        : "Keep fixed income, bills, and repeating transfers in one clear schedule.";
 
   if (loading) {
     return (
@@ -462,6 +635,10 @@ export default function DashboardPage() {
     setGoalForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function updateRecurringForm<K extends keyof RecurringFormState>(key: K, value: RecurringFormState[K]) {
+    setRecurringForm((prev) => ({ ...prev, [key]: value }));
+  }
+
   function openBudgetEditor(budget?: BudgetRow) {
     if (budget) {
       setBudgetForm({
@@ -493,6 +670,27 @@ export default function DashboardPage() {
     }
 
     setOpenGoalModal(true);
+  }
+
+  function openRecurringEditor(item?: RecurringTransactionRow) {
+    if (item) {
+      setRecurringForm({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        amount: String(item.amount),
+        category: item.category,
+        note: item.note ?? "",
+        frequency: item.frequency,
+        cadence: String(item.cadence),
+        nextDueDate: item.next_due_date,
+        active: item.active,
+      });
+    } else {
+      setRecurringForm(initialRecurringFormState());
+    }
+
+    setOpenRecurringModal(true);
   }
 
   async function onSaveBudget(e: React.FormEvent) {
@@ -594,539 +792,750 @@ export default function DashboardPage() {
     }
   }
 
+  async function onSaveRecurring(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSaveRecurring) return;
+
+    setSavingRecurring(true);
+    setError("");
+    setInfo("");
+
+    try {
+      const saved = await upsertMyRecurringTransaction({
+        id: recurringForm.id,
+        name: recurringForm.name,
+        type: recurringForm.type,
+        amount: Number(recurringForm.amount),
+        category: recurringForm.category,
+        note: recurringForm.note,
+        frequency: recurringForm.frequency,
+        cadence: Number(recurringForm.cadence),
+        next_due_date: recurringForm.nextDueDate,
+        active: recurringForm.active,
+      });
+
+      setRecurringItems((prev) => {
+        const withoutCurrent = prev.filter((item) => item.id !== saved.id);
+        return sortRecurring([...withoutCurrent, saved]);
+      });
+      setOpenRecurringModal(false);
+      setRecurringForm(initialRecurringFormState());
+      setRecurringError("");
+      setInfo(recurringForm.id ? "Recurring item updated successfully." : "Recurring item created successfully.");
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, "Failed to save recurring item."));
+    } finally {
+      setSavingRecurring(false);
+    }
+  }
+
+  async function onDeleteRecurring(id: number) {
+    const confirmed = window.confirm("Delete this recurring item?");
+    if (!confirmed) return;
+
+    setError("");
+    setInfo("");
+
+    try {
+      await deleteMyRecurringTransaction(id);
+      setRecurringItems((prev) => prev.filter((item) => item.id !== id));
+      setInfo("Recurring item deleted.");
+    } catch (deleteError) {
+      setError(getErrorMessage(deleteError, "Failed to delete recurring item."));
+    }
+  }
+
+  async function onLogRecurring(id: number) {
+    setError("");
+    setInfo("");
+
+    try {
+      const result = await logMyRecurringTransaction(id);
+      setRecurringItems((prev) => {
+        const withoutCurrent = prev.filter((item) => item.id !== result.recurring.id);
+        return sortRecurring([...withoutCurrent, result.recurring]);
+      });
+      setRecent((prev) => [result.transaction, ...prev].slice(0, 60));
+      if (result.transaction.date.startsWith(currentMonthKey)) {
+        setMonthTransactions((prev) => [result.transaction, ...prev]);
+        setSummary((prev) => {
+          const base = prev ?? { income: 0, expenses: 0, net: 0 };
+          const income =
+            base.income + (result.transaction.type === "income" ? Number(result.transaction.amount) : 0);
+          const expenses =
+            base.expenses + (result.transaction.type === "expense" ? Number(result.transaction.amount) : 0);
+          return { income, expenses, net: income - expenses };
+        });
+      }
+      setInfo(`Logged recurring item "${result.recurring.name}".`);
+    } catch (logError) {
+      setError(getErrorMessage(logError, "Failed to log recurring item."));
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Dashboard</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Welcome, <span className="font-medium text-slate-900">{displayName}</span>
+    <div className="space-y-6 pb-10">
+      <section className="border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">SoloLedger AI</div>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{pageHeading}</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              {pageDescription} {activeView === "overview" ? `Month: ${currentMonthLabel}.` : null}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/"
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50"
-            >
-              AI Chat
-            </Link>
-            <button
-              onClick={() => {
-                setForm(initialFormState());
-                setOpenAdd(true);
-              }}
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-black"
-            >
-              + Add transaction
-            </button>
-            <button
-              onClick={async () => {
-                await signOut();
-                router.replace("/login");
-              }}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
+          <div className="flex flex-wrap gap-3">
+            {activeView === "overview" ? (
+              <button
+                onClick={() => {
+                  setForm(initialFormState());
+                  setOpenAdd(true);
+                }}
+                className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+              >
+                Add transaction
+              </button>
+            ) : null}
 
-        {info ? (
-          <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-            {info}
-          </div>
-        ) : null}
-
-        {error ? (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-            <div className="font-semibold">Error</div>
-            <div className="mt-1 text-red-800">{error}</div>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-slate-500">Income (this month)</div>
-            <Pill tone="green">Income</Pill>
-          </div>
-          <div className="mt-3 text-3xl font-semibold text-emerald-700">
-            {formatEUR(summary?.income ?? 0)}
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-slate-500">Expenses (this month)</div>
-            <Pill tone="red">Expenses</Pill>
-          </div>
-          <div className="mt-3 text-3xl font-semibold text-rose-700">
-            {formatEUR(summary?.expenses ?? 0)}
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-slate-500">Net</div>
-            <Pill tone="slate">Balance</Pill>
-          </div>
-          <div className="mt-3 text-3xl font-semibold text-slate-900">
-            {formatEUR(summary?.net ?? 0)}
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">AI spending signals</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                {insightSnapshot.transactionCount > 0
-                  ? `Based on your last ${insightSnapshot.transactionCount} tracked transaction${insightSnapshot.transactionCount === 1 ? "" : "s"} across ${insightSnapshot.coverageDays} day${insightSnapshot.coverageDays === 1 ? "" : "s"}.`
-                  : "Start tracking transactions and the dashboard will surface real spending signals here."}
-              </p>
-            </div>
-
-            <Link
-              href="/"
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50"
-            >
-              Open AI copilot
-            </Link>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Savings rate
-              </div>
-              <div className="mt-2 text-2xl font-semibold text-slate-900">
-                {formatInsightPercent(insightSnapshot.savingsRate)}
-              </div>
-              <div className="mt-1 text-sm text-slate-600">
-                Target benchmark: {insightSnapshot.savingsTarget ? formatInsightCurrency(insightSnapshot.savingsTarget) : "Add income"}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Daily burn
-              </div>
-              <div className="mt-2 text-2xl font-semibold text-slate-900">
-                {formatInsightCurrency(insightSnapshot.averageDailyExpense)}
-              </div>
-              <div className="mt-1 text-sm text-slate-600">Average tracked expense per day</div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Main pressure point
-              </div>
-              <div className="mt-2 text-2xl font-semibold text-slate-900">
-                {insightSnapshot.topExpenseCategory?.category ?? "Waiting for data"}
-              </div>
-              <div className="mt-1 text-sm text-slate-600">
-                {insightSnapshot.topExpenseCategory
-                  ? `${formatInsightCurrency(insightSnapshot.topExpenseCategory.amount)} of expense volume`
-                  : "Add expense categories to reveal the biggest lever"}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {insightSnapshot.highlights.map((highlight) => (
-              <InsightCard
-                key={highlight.id}
-                title={highlight.title}
-                detail={highlight.detail}
-                tone={highlight.tone}
-              />
-            ))}
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-          <h2 className="text-lg font-semibold text-slate-900">Category pressure map</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            This helps you see where a small change would create the biggest savings impact.
-          </p>
-
-          <div className="mt-5 space-y-3">
-            {topCategories.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm leading-6 text-slate-600">
-                Add some expense transactions and SoloLedger AI will highlight the categories with the most pressure.
-              </div>
-            ) : (
-              topCategories.map((category) => (
-                <div key={category.category} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="font-medium text-slate-900">{category.category}</div>
-                      <div className="text-sm text-slate-600">
-                        {category.transactions} transaction{category.transactions === 1 ? "" : "s"}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold text-slate-900">{formatInsightCurrency(category.amount)}</div>
-                      <div className="text-sm text-slate-600">
-                        {formatInsightPercent(category.shareOfExpenses)}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
-                    <div
-                      className="h-full rounded-full bg-slate-900"
-                      style={{ width: `${Math.max(8, Math.round(category.shareOfExpenses * 100))}%` }}
-                    />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-sm font-semibold text-slate-900">AI playbooks</div>
-            <div className="mt-3 flex flex-col gap-2">
-              {aiPlaybooks.map((prompt) => (
-                <Link
-                  key={prompt}
-                  href={{ pathname: "/", query: { prompt } }}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 transition hover:bg-slate-50"
+            {activeView === "plan" ? (
+              <>
+                <button
+                  onClick={() => openBudgetEditor()}
+                  className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
                 >
-                  {prompt}
-                </Link>
-              ))}
-            </div>
+                  Add budget
+                </button>
+                <button
+                  onClick={() => openGoalEditor()}
+                  className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                >
+                  Add goal
+                </button>
+              </>
+            ) : null}
+
+            {activeView === "automation" ? (
+              <button
+                onClick={() => openRecurringEditor()}
+                className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+              >
+                Add recurring item
+              </button>
+            ) : null}
+
+            <Link
+              href={activeView === "overview" ? { pathname: "/", query: { prompt: leadPrompt } } : "/"}
+              className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+            >
+              Open AI assistant
+            </Link>
           </div>
         </div>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Budgets and guardrails</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Set monthly limits per category so SoloLedger can warn you before spending drifts.
-              </p>
-            </div>
+      {info ? (
+        <div className="rounded-xl border border-blue-200/80 bg-blue-50 px-5 py-4 text-sm text-blue-900 shadow-sm">
+          {info}
+        </div>
+      ) : null}
 
-            <button
-              onClick={() => openBudgetEditor()}
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-black"
-            >
-              + Add budget
-            </button>
-          </div>
+      {error ? (
+        <div className="rounded-xl border border-red-200/80 bg-red-50 px-5 py-4 text-sm text-red-900 shadow-sm">
+          <div className="font-semibold">Error</div>
+          <div className="mt-1 text-red-800">{error}</div>
+        </div>
+      ) : null}
 
-          {planningError ? (
-            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              {planningError}
-            </div>
-          ) : null}
+      {activeView === "overview" ? (
+        <>
+          {setupRemainingCount > 0 ? (
+            <section className="border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="max-w-2xl">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Start here</div>
+                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+                    Set up the basics in a few simple steps
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    SoloLedger becomes much more useful once you add a little context. You still have {setupRemainingCount}{" "}
+                    setup step{setupRemainingCount === 1 ? "" : "s"} left.
+                  </p>
+                </div>
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">On track</div>
-              <div className="mt-2 text-2xl font-semibold text-emerald-700">{planningSnapshot.budgetsOnTrack}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">At risk</div>
-              <div className="mt-2 text-2xl font-semibold text-amber-700">{planningSnapshot.budgetsAtRisk}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Over limit</div>
-              <div className="mt-2 text-2xl font-semibold text-rose-700">{planningSnapshot.budgetsOverLimit}</div>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-3">
-            {planningSnapshot.budgetProgress.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm leading-6 text-slate-600">
-                No budgets yet. Start with categories like Food, Transport, or Entertainment to create useful guardrails.
+                <Link
+                  href={{ pathname: "/", query: { prompt: "Guide me through setting up my SoloLedger workspace." } }}
+                  className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                >
+                  Ask AI to guide setup
+                </Link>
               </div>
-            ) : (
-              planningSnapshot.budgetProgress.map((budget) => {
-                const barWidth = Math.min(100, Math.max(6, Math.round(budget.usageRatio * 100)));
-                const barTone =
-                  budget.status === "over_limit"
-                    ? "bg-rose-600"
-                    : budget.status === "at_risk"
-                      ? "bg-amber-500"
-                      : "bg-emerald-600";
 
-                return (
-                  <article key={budget.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="font-medium text-slate-900">{budget.category}</div>
-                          <StatusBadge
-                            tone={
-                              budget.status === "over_limit"
-                                ? "rose"
-                                : budget.status === "at_risk"
-                                  ? "amber"
-                                  : "green"
-                            }
-                          >
-                            {budget.status === "over_limit"
-                              ? "Over limit"
-                              : budget.status === "at_risk"
-                                ? "At risk"
-                                : "On track"}
-                          </StatusBadge>
-                        </div>
-                        <div className="mt-1 text-sm text-slate-600">
-                          Spent {formatEUR(budget.spent)} of {formatEUR(budget.monthly_limit)} this month.
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openBudgetEditor(budget)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
+              <div className="mt-5 grid gap-3 lg:grid-cols-2">
+                {setupChecklist.map((item) => (
+                  <article
+                    key={item.key}
+                    className={[
+                      "flex items-start justify-between gap-4 border px-4 py-4",
+                      item.done ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50",
+                    ].join(" ")}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={[
+                            "inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
+                            item.done ? "bg-emerald-600 text-white" : "bg-slate-900 text-white",
+                          ].join(" ")}
                         >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteBudget(budget.id)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
-                        >
-                          Delete
-                        </button>
+                          {item.done ? "OK" : "Next"}
+                        </span>
+                        <div className="text-sm font-semibold text-slate-950">{item.title}</div>
                       </div>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">{item.detail}</p>
                     </div>
 
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
-                      <div className={`h-full rounded-full ${barTone}`} style={{ width: `${barWidth}%` }} />
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
-                      <span>{Math.round(budget.usageRatio * 100)}% of budget used</span>
-                      <span>
-                        {budget.remaining >= 0
-                          ? `${formatEUR(budget.remaining)} remaining`
-                          : `${formatEUR(Math.abs(budget.remaining))} over limit`}
-                      </span>
-                    </div>
+                    {item.done ? (
+                      <StatusBadge tone="green">Done</StatusBadge>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={item.onClick}
+                        className="border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                      >
+                        {item.action}
+                      </button>
+                    )}
                   </article>
-                );
-              })
-            )}
-          </div>
-
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-sm font-semibold text-slate-900">Unbudgeted spend</div>
-            <div className="mt-2 text-sm leading-6 text-slate-600">
-              {planningSnapshot.unbudgetedExpenseTotal > 0
-                ? `${formatEUR(planningSnapshot.unbudgetedExpenseTotal)} this month is still outside your configured budgets.`
-                : "All tracked expense categories are covered by budgets this month."}
-            </div>
-            {planningSnapshot.unbudgetedCategories.length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {planningSnapshot.unbudgetedCategories.slice(0, 6).map((category) => (
-                  <StatusBadge key={category} tone="slate">
-                    {category}
-                  </StatusBadge>
                 ))}
               </div>
-            ) : null}
-          </div>
-        </div>
+            </section>
+          ) : null}
 
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Savings goals</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Turn surplus into progress with named goals, contribution targets, and timing pressure.
+          <section className="grid gap-4 md:grid-cols-3">
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Income</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{formatEUR(monthlyIncome)}</div>
+              <p className="mt-2 text-sm text-slate-600">Tracked this month.</p>
+            </article>
+
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Expenses</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{formatEUR(monthlyExpenses)}</div>
+              <p className="mt-2 text-sm text-slate-600">Tracked this month.</p>
+            </article>
+
+            <article className="border border-slate-950 bg-slate-950 p-5 text-white shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Net</div>
+              <div className="mt-3 text-3xl font-semibold">{formatEUR(monthlyNet)}</div>
+              <p className="mt-2 text-sm text-slate-300">
+                {monthlyNet >= 0 ? "Positive position this month." : "Current month is under pressure."}
               </p>
-            </div>
+            </article>
+          </section>
 
-            <button
-              onClick={() => openGoalEditor()}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
-            >
-              + Add goal
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Active goals</div>
-              <div className="mt-2 text-2xl font-semibold text-slate-900">{planningSnapshot.activeGoalCount}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Monthly goal load
+          <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+            <article className="border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">This week</div>
+                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Cash flow snapshot</h2>
+                </div>
+                <Pill tone={weeklyPulse.currentWeekNet >= 0 ? "green" : "red"}>
+                  {weeklyPulse.currentWeekNet >= 0 ? "On track" : "Watch spend"}
+                </Pill>
               </div>
-              <div className="mt-2 text-2xl font-semibold text-slate-900">
+
+              <div className="mt-5 space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Weekly net</div>
+                    <div className="mt-2 text-2xl font-semibold text-slate-950">{formatEUR(weeklyPulse.currentWeekNet)}</div>
+                  </div>
+                  <div className="border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Due soon</div>
+                    <div className="mt-2 text-2xl font-semibold text-slate-950">{weeklyPulse.upcomingRecurringCount}</div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {focusItems.slice(0, 3).map((item) => (
+                    <div key={item} className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                      {item}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="border border-slate-200 bg-white px-4 py-4">
+                  <div className="text-sm font-semibold text-slate-950">AI shortcut</div>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {insightSnapshot.topExpenseCategory
+                      ? `${insightSnapshot.topExpenseCategory.category} is the largest expense category right now.`
+                      : "Ask the assistant to review your latest spending and suggest one simple next step."}
+                  </p>
+                  <Link
+                    href={{ pathname: "/", query: { prompt: leadPrompt } }}
+                    className="mt-4 inline-flex border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                  >
+                    Ask with context
+                  </Link>
+                </div>
+              </div>
+            </article>
+
+            <section className="border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Transactions</div>
+                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Recent activity</h2>
+                </div>
+                {dashboardLoading ? <span className="text-sm text-slate-500">Loading...</span> : null}
+              </div>
+
+              <div className="mt-5 space-y-3">
+                {recentFeed.length === 0 ? (
+                  <div className="border border-dashed border-slate-300 bg-slate-50 px-5 py-6 text-sm leading-6 text-slate-600">
+                    No transactions yet. Add your salary, one recent expense, or today&apos;s spending and this page will
+                    start showing a real picture of your month.
+                  </div>
+                ) : (
+                  recentFeed.map((transaction) => {
+                    const isExpense = transaction.type === "expense";
+                    return (
+                      <article key={transaction.id} className="border border-slate-200 bg-white px-5 py-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-3">
+                              <span className={["h-3 w-3", isExpense ? "bg-rose-500" : "bg-emerald-500"].join(" ")} />
+                              <div className="truncate text-base font-semibold text-slate-950">{transaction.category}</div>
+                              <Pill tone={isExpense ? "red" : "green"}>{isExpense ? "Expense" : "Income"}</Pill>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                              {transaction.note?.trim() ? transaction.note : "No note added."}
+                            </p>
+                            <div className="mt-3 inline-flex rounded-md border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
+                              {transaction.date}
+                            </div>
+                          </div>
+
+                          <div className={["text-2xl font-semibold", isExpense ? "text-rose-700" : "text-emerald-700"].join(" ")}>
+                            {isExpense ? "-" : "+"}
+                            {formatEUR(Number(transaction.amount))}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          </section>
+        </>
+      ) : null}
+
+      {activeView === "plan" ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Budgets on track</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.budgetsOnTrack}</div>
+            </article>
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Budgets at risk</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">
+                {planningSnapshot.budgetsAtRisk + planningSnapshot.budgetsOverLimit}
+              </div>
+            </article>
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Active goals</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.activeGoalCount}</div>
+            </article>
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Goal load</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">
                 {formatEUR(planningSnapshot.totalMonthlyGoalTarget)}
               </div>
-            </div>
-          </div>
+            </article>
+          </section>
 
-          <div className="mt-4 space-y-3">
-            {planningSnapshot.goalProgress.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm leading-6 text-slate-600">
-                No savings goals yet. Add one for an emergency fund, tax buffer, travel, or a big purchase.
+          <section className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
+          <div className="border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Budgets</div>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Budgets</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Set a spending limit for each category so you can spot problems before the month gets away from you.
+                </p>
               </div>
-            ) : (
-              planningSnapshot.goalProgress.map((goal) => {
-                const progressWidth = Math.min(100, Math.max(6, Math.round(goal.progressRatio * 100)));
 
-                return (
-                  <article key={goal.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="font-medium text-slate-900">{goal.name}</div>
-                          <StatusBadge
-                            tone={
-                              goal.fundingStatus === "complete"
-                                ? "green"
-                                : goal.fundingStatus === "ready"
-                                  ? "green"
-                                  : goal.fundingStatus === "tight"
-                                    ? "amber"
-                                    : "rose"
-                            }
-                          >
-                            {goal.fundingStatus === "complete"
-                              ? "Complete"
-                              : goal.fundingStatus === "ready"
-                                ? "Fundable"
-                                : goal.fundingStatus === "tight"
-                                  ? "Needs room"
-                                  : "No surplus"}
-                          </StatusBadge>
-                          {goal.status === "paused" ? <StatusBadge tone="slate">Paused</StatusBadge> : null}
-                        </div>
-                        <div className="mt-1 text-sm text-slate-600">
-                          {formatEUR(goal.current_amount)} saved of {formatEUR(goal.target_amount)} target
-                        </div>
-                      </div>
+              <button
+                onClick={() => openBudgetEditor()}
+                className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+              >
+                Add budget
+              </button>
+            </div>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openGoalEditor(goal)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteGoal(goal.id)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
+            {planningError ? (
+              <div className="mt-5 border border-slate-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                {planningError}
+              </div>
+            ) : null}
 
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
-                      <div className="h-full rounded-full bg-slate-900" style={{ width: `${progressWidth}%` }} />
-                    </div>
-
-                    <div className="mt-3 grid gap-2 text-sm text-slate-600">
-                      <div className="flex items-center justify-between gap-3">
-                        <span>{Math.round(goal.progressRatio * 100)}% complete</span>
-                        <span>{formatEUR(goal.remaining)} remaining</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Target date</span>
-                        <span>{formatTargetDate(goal.target_date)}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Monthly target</span>
-                        <span>
-                          {goal.effectiveMonthlyTarget ? formatEUR(goal.effectiveMonthlyTarget) : "Not set"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Projected runway</span>
-                        <span>
-                          {goal.projectedMonthsLeft === null
-                            ? "Manual pacing"
-                            : goal.projectedMonthsLeft === 0
-                              ? "Goal reached"
-                              : `${goal.projectedMonthsLeft} month${goal.projectedMonthsLeft === 1 ? "" : "s"}`}
-                        </span>
-                      </div>
-                    </div>
-
-                    {goal.fundingGap && goal.fundingGap > 0 ? (
-                      <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                        You need about {formatEUR(goal.fundingGap)} more monthly surplus to fully fund this pace.
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_30px_rgba(2,6,23,0.06)]">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">Recent transactions</h2>
-          {dashboardLoading ? <span className="text-sm text-slate-500">Loading...</span> : null}
-        </div>
-
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate-500">
-              <tr className="border-b border-slate-200">
-                <th className="py-2 pr-4">Date</th>
-                <th className="py-2 pr-4">Category</th>
-                <th className="py-2 pr-4">Note</th>
-                <th className="py-2 text-right">Amount</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {visibleRecent.length === 0 ? (
-                <tr>
-                  <td className="py-4 text-slate-500" colSpan={4}>
-                    No transactions yet.
-                  </td>
-                </tr>
+            <div className="mt-5 space-y-3">
+              {planningSnapshot.budgetProgress.length === 0 ? (
+                <div className="border border-dashed border-slate-300 bg-slate-50 px-5 py-6 text-sm leading-6 text-slate-600">
+                  No budgets yet. A good starting point is Food, Transport, Housing, and Entertainment, then adjust
+                  them as your real spending becomes clearer.
+                </div>
               ) : (
-                visibleRecent.map((transaction) => {
-                  const isExpense = transaction.type === "expense";
+                planningSnapshot.budgetProgress.map((budget) => {
+                  const barWidth = Math.min(100, Math.max(6, Math.round(budget.usageRatio * 100)));
+                  const barTone =
+                    budget.status === "over_limit"
+                      ? "bg-rose-600"
+                      : budget.status === "at_risk"
+                        ? "bg-amber-500"
+                        : "bg-emerald-600";
+
                   return (
-                    <tr key={transaction.id} className="border-b border-slate-100 hover:bg-slate-50/60">
-                      <td className="py-3 pr-4 text-slate-700">{transaction.date}</td>
-                      <td className="py-3 pr-4">
-                        <span className="font-medium text-slate-900">{transaction.category}</span>
-                      </td>
-                      <td className="py-3 pr-4 text-slate-700">{transaction.note ?? "-"}</td>
-                      <td
-                        className={`py-3 text-right font-semibold ${
-                          isExpense ? "text-rose-700" : "text-emerald-700"
-                        }`}
-                      >
-                        {isExpense ? "-" : "+"}
-                        {formatEUR(Number(transaction.amount))}
-                      </td>
-                    </tr>
+                    <article key={budget.id} className="border border-slate-200 bg-slate-50 p-5">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-lg font-semibold text-slate-950">{budget.category}</div>
+                            <StatusBadge
+                              tone={
+                                budget.status === "over_limit"
+                                  ? "rose"
+                                  : budget.status === "at_risk"
+                                    ? "amber"
+                                    : "green"
+                              }
+                            >
+                              {budget.status === "over_limit"
+                                ? "Over limit"
+                                : budget.status === "at_risk"
+                                  ? "At risk"
+                                  : "On track"}
+                            </StatusBadge>
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-slate-600">
+                            Spent {formatEUR(budget.spent)} of {formatEUR(budget.monthly_limit)} this month.
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openBudgetEditor(budget)}
+                            className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteBudget(budget.id)}
+                            className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-white">
+                        <div className={["h-full rounded-full", barTone].join(" ")} style={{ width: `${barWidth}%` }} />
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+                        <span>{Math.round(budget.usageRatio * 100)}% of budget used</span>
+                        <span>
+                          {budget.remaining >= 0
+                            ? `${formatEUR(budget.remaining)} remaining`
+                            : `${formatEUR(Math.abs(budget.remaining))} over limit`}
+                        </span>
+                      </div>
+                    </article>
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            </div>
+
+            <div className="mt-5 border border-slate-900 bg-slate-950 p-5 text-white">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Unbudgeted spend</div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">
+                {planningSnapshot.unbudgetedExpenseTotal > 0
+                  ? `${formatEUR(planningSnapshot.unbudgetedExpenseTotal)} this month is still sitting outside your configured budgets.`
+                  : "All tracked expense categories are covered by budgets this month."}
+              </p>
+              {planningSnapshot.unbudgetedCategories.length > 0 ? (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {planningSnapshot.unbudgetedCategories.slice(0, 6).map((category) => (
+                    <span
+                      key={category}
+                      className="inline-flex rounded-md border border-white/12 bg-white/[0.05] px-3 py-1 text-xs font-medium text-slate-200"
+                    >
+                      {category}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Savings goals</div>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Savings goals</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Keep larger priorities visible so saving feels intentional, not accidental.
+                </p>
+              </div>
+
+              <button
+                onClick={() => openGoalEditor()}
+                className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                >
+                  Add goal
+                </button>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {planningSnapshot.goalProgress.length === 0 ? (
+                <div className="border border-dashed border-slate-300 bg-slate-50 px-5 py-6 text-sm leading-6 text-slate-600">
+                  No savings goals yet. Good first goals are an emergency fund, a travel target, a tax buffer, or a
+                  larger purchase you want to prepare for.
+                </div>
+              ) : (
+                planningSnapshot.goalProgress.map((goal) => {
+                  const progressWidth = Math.min(100, Math.max(6, Math.round(goal.progressRatio * 100)));
+
+                  return (
+                    <article key={goal.id} className="border border-slate-200 bg-white p-5">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-lg font-semibold text-slate-950">{goal.name}</div>
+                            <StatusBadge
+                              tone={
+                                goal.fundingStatus === "complete"
+                                  ? "green"
+                                  : goal.fundingStatus === "ready"
+                                    ? "green"
+                                    : goal.fundingStatus === "tight"
+                                      ? "amber"
+                                      : "rose"
+                              }
+                            >
+                              {goal.fundingStatus === "complete"
+                                ? "Complete"
+                                : goal.fundingStatus === "ready"
+                                  ? "Fundable"
+                                  : goal.fundingStatus === "tight"
+                                    ? "Needs room"
+                                    : "No surplus"}
+                            </StatusBadge>
+                            {goal.status === "paused" ? <StatusBadge tone="slate">Paused</StatusBadge> : null}
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-slate-600">
+                            {formatEUR(goal.current_amount)} saved of {formatEUR(goal.target_amount)} target.
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openGoalEditor(goal)}
+                            className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteGoal(goal.id)}
+                            className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                        <div className="h-full rounded-full bg-slate-950" style={{ width: `${progressWidth}%` }} />
+                      </div>
+
+                      <div className="mt-4 grid gap-2 text-sm text-slate-600">
+                        <div className="flex items-center justify-between gap-3">
+                          <span>{Math.round(goal.progressRatio * 100)}% complete</span>
+                          <span>{formatEUR(goal.remaining)} remaining</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Target date</span>
+                          <span>{formatTargetDate(goal.target_date)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Monthly target</span>
+                          <span>{goal.effectiveMonthlyTarget ? formatEUR(goal.effectiveMonthlyTarget) : "Not set"}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Projected runway</span>
+                          <span>
+                            {goal.projectedMonthsLeft === null
+                              ? "Manual pacing"
+                              : goal.projectedMonthsLeft === 0
+                                ? "Goal reached"
+                                : `${goal.projectedMonthsLeft} month${goal.projectedMonthsLeft === 1 ? "" : "s"}`}
+                          </span>
+                        </div>
+                      </div>
+
+                      {goal.fundingGap && goal.fundingGap > 0 ? (
+                        <div className="mt-4 border border-slate-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                          You need about {formatEUR(goal.fundingGap)} more monthly surplus to fully fund this pace.
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeView === "automation" ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-3">
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Active items</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{recurringSnapshot.activeCount}</div>
+            </article>
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Monthly fixed expenses</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">
+                {formatEUR(recurringSnapshot.monthlyCommittedExpenses)}
+              </div>
+            </article>
+            <article className="border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Due this week</div>
+              <div className="mt-3 text-3xl font-semibold text-slate-950">{recurringSnapshot.dueThisWeekCount}</div>
+            </article>
+          </section>
+
+          <section className="grid gap-4 xl:grid-cols-[0.86fr_1.14fr]">
+          <div className="border border-slate-900 bg-slate-950 p-6 text-white shadow-sm">
+            <div className="flex flex-col gap-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">Recurring overview</div>
+              <h2 className="text-2xl font-semibold tracking-tight">Recurring items</h2>
+              <p className="text-sm leading-6 text-slate-300">
+                Keep rent, salary, subscriptions, and fixed transfers on a clear schedule so nothing catches you by
+                surprise.
+              </p>
+            </div>
+
+            <button
+              onClick={() => openRecurringEditor()}
+              className="mt-5 border border-white bg-white px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-slate-100"
+            >
+              Add recurring item
+            </button>
+
+            {recurringError ? (
+              <div className="mt-5 rounded-lg border border-amber-200/30 bg-amber-100/10 px-4 py-4 text-sm text-amber-100">
+                {recurringError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.05] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Fixed commitments</div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">
+                This section helps you remember repeating money movements without needing to track them manually every
+                time.
+              </p>
+            </div>
+
+            <div className="mt-5 space-y-2">
+              {focusItems.slice(0, 2).map((item) => (
+                <div key={item} className="border border-white/10 bg-white/[0.05] px-4 py-3 text-sm leading-6 text-slate-200">
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Recurring schedule</div>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Fixed payments and income</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Every recurring item appears here with its next due date so you can log it quickly when it happens.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {upcomingRecurring.length === 0 ? (
+                <div className="border border-dashed border-slate-300 bg-slate-50 px-5 py-6 text-sm leading-6 text-slate-600">
+                  No recurring items yet. Add rent, salary, subscriptions, loan payments, or tax transfers so your
+                  fixed money routine is visible in one place.
+                </div>
+              ) : (
+                upcomingRecurring.map((item) => (
+                  <article key={item.id} className="border border-slate-200 bg-slate-50 p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-lg font-semibold text-slate-950">{item.name}</div>
+                          <StatusBadge tone={item.type === "income" ? "green" : "slate"}>
+                            {item.type === "income" ? "Income" : "Expense"}
+                          </StatusBadge>
+                          {!item.active ? <StatusBadge tone="slate">Paused</StatusBadge> : null}
+                          {item.next_due_date < todayDateKey ? <StatusBadge tone="rose">Overdue</StatusBadge> : null}
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-slate-600">
+                          {formatEUR(item.amount)} in {item.category}. {formatRecurringFrequency(item.frequency, item.cadence)}.
+                        </p>
+                        <div className="mt-3 inline-flex rounded-md border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                          Next due: {item.next_due_date}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void onLogRecurring(item.id)}
+                          className="border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-900"
+                        >
+                          Log now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openRecurringEditor(item)}
+                          className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteRecurring(item.id)}
+                          className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+          </section>
+        </>
+      ) : null}
 
       <Modal
         open={openAdd}
@@ -1398,6 +1807,163 @@ export default function DashboardPage() {
           </div>
         </form>
       </Modal>
+
+      <Modal
+        open={openRecurringModal}
+        title={recurringForm.id ? "Edit recurring item" : "Add recurring item"}
+        onClose={() => {
+          if (savingRecurring) return;
+          setOpenRecurringModal(false);
+        }}
+      >
+        <form onSubmit={onSaveRecurring} className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label className="text-xs font-medium text-slate-600">Name</label>
+            <input
+              value={recurringForm.name}
+              onChange={(e) => updateRecurringForm("name", e.target.value)}
+              placeholder="Rent, Salary, Spotify, Tax reserve..."
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Type</label>
+            <select
+              value={recurringForm.type}
+              onChange={(e) => updateRecurringForm("type", e.target.value as TransactionType)}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            >
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Amount (EUR)</label>
+            <input
+              value={recurringForm.amount}
+              onChange={(e) => updateRecurringForm("amount", e.target.value)}
+              inputMode="decimal"
+              placeholder="e.g. 499"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Category</label>
+            <input
+              value={recurringForm.category}
+              onChange={(e) => updateRecurringForm("category", e.target.value)}
+              placeholder="Housing, Payroll, Tools..."
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Note (optional)</label>
+            <input
+              value={recurringForm.note}
+              onChange={(e) => updateRecurringForm("note", e.target.value)}
+              placeholder="Optional context"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Frequency</label>
+            <select
+              value={recurringForm.frequency}
+              onChange={(e) => updateRecurringForm("frequency", e.target.value as RecurringFrequency)}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            >
+              <option value="monthly">Monthly</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Cadence</label>
+            <input
+              value={recurringForm.cadence}
+              onChange={(e) => updateRecurringForm("cadence", e.target.value)}
+              inputMode="numeric"
+              placeholder="1"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Next due date</label>
+            <input
+              type="date"
+              value={recurringForm.nextDueDate}
+              onChange={(e) => updateRecurringForm("nextDueDate", e.target.value)}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingRecurring}
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={recurringForm.active}
+                onChange={(e) => updateRecurringForm("active", e.target.checked)}
+                disabled={savingRecurring}
+              />
+              Active recurring item
+            </label>
+          </div>
+
+          <div className="sm:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            {recurringFormError
+              ? recurringFormError
+              : "Use recurring items to forecast fixed commitments and log them with one click when they hit."}
+          </div>
+
+          <div className="sm:col-span-2 flex items-center gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={!canSaveRecurring}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {savingRecurring ? "Saving..." : recurringForm.id ? "Save changes" : "Create recurring"}
+            </button>
+
+            <button
+              type="button"
+              disabled={savingRecurring}
+              onClick={() => setOpenRecurringModal(false)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
+
+export default function DashboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="grid min-h-[60vh] place-items-center text-slate-600">
+          Loading dashboard...
+        </main>
+      }
+    >
+      <DashboardWorkspace view="overview" />
+    </Suspense>
+  );
+}
+
