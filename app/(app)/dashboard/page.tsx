@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../providers/AuthProvider";
+import { useLanguage } from "../../providers/LanguageProvider";
 import { getLocalDateInputValue } from "@/lib/dates";
 import { getErrorMessage } from "@/lib/errors";
 import {
@@ -300,6 +301,7 @@ function formatRecurringFrequency(frequency: RecurringFrequency, cadence: number
 export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const { t } = useLanguage();
 
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [savingTransaction, setSavingTransaction] = useState(false);
@@ -526,9 +528,9 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
     {
       key: "transactions",
       done: hasTransactions,
-      title: "Add your first income or expense",
-      detail: "This gives the dashboard real numbers to work with.",
-      action: "Add transaction",
+      title: t("dashboard_setup_transactions_title"),
+      detail: t("dashboard_setup_transactions_detail"),
+      action: t("dashboard_add_transaction"),
       onClick: () => {
         setForm(initialFormState());
         setOpenAdd(true);
@@ -537,41 +539,41 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
     {
       key: "budget",
       done: hasBudgets,
-      title: "Create at least one monthly budget",
-      detail: "Budgets make it easier to see when spending is drifting.",
-      action: "Add budget",
+      title: t("dashboard_setup_budget_title"),
+      detail: t("dashboard_setup_budget_detail"),
+      action: t("dashboard_add_budget"),
       onClick: () => openBudgetEditor(),
     },
     {
       key: "goal",
       done: hasGoals,
-      title: "Create a savings goal",
-      detail: "Goals turn spare money into a clear plan.",
-      action: "Add goal",
+      title: t("dashboard_setup_goal_title"),
+      detail: t("dashboard_setup_goal_detail"),
+      action: t("dashboard_add_goal"),
       onClick: () => openGoalEditor(),
     },
     {
       key: "recurring",
       done: hasRecurringItems,
-      title: "Add recurring bills or income",
-      detail: "Track rent, salary, subscriptions, or tax transfers in one place.",
-      action: "Add recurring",
+      title: t("dashboard_setup_recurring_title"),
+      detail: t("dashboard_setup_recurring_detail"),
+      action: t("dashboard_add_recurring"),
       onClick: () => openRecurringEditor(),
     },
   ];
   const setupRemainingCount = setupChecklist.filter((item) => !item.done).length;
   const pageHeading =
     activeView === "overview"
-      ? "Overview"
+      ? t("dashboard_overview")
       : activeView === "plan"
-        ? "Planning"
-        : "Recurring";
+        ? t("dashboard_planning")
+        : t("dashboard_recurring");
   const pageDescription =
     activeView === "overview"
-      ? "Start with the essentials: current balance, this week, and the next best action for your money."
+      ? t("dashboard_description_overview")
       : activeView === "plan"
-        ? "Manage budgets and savings goals in a way that stays clear even for first-time users."
-        : "Keep fixed income, bills, and repeating transfers in one clear schedule.";
+        ? t("dashboard_description_planning")
+        : t("dashboard_description_recurring");
 
   if (loading) {
     return (
@@ -894,7 +896,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                 }}
                 className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
               >
-                Add transaction
+                {t("dashboard_add_transaction")}
               </button>
             ) : null}
 
@@ -904,13 +906,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                   onClick={() => openBudgetEditor()}
                   className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
                 >
-                  Add budget
+                  {t("dashboard_add_budget")}
                 </button>
                 <button
                   onClick={() => openGoalEditor()}
                   className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
                 >
-                  Add goal
+                  {t("dashboard_add_goal")}
                 </button>
               </>
             ) : null}
@@ -920,7 +922,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                 onClick={() => openRecurringEditor()}
                 className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
               >
-                Add recurring item
+                {t("dashboard_add_recurring")}
               </button>
             ) : null}
 
@@ -928,7 +930,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
               href={activeView === "overview" ? { pathname: "/", query: { prompt: leadPrompt } } : "/"}
               className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
             >
-              Open AI assistant
+              {t("dashboard_open_ai")}
             </Link>
           </div>
         </div>
@@ -953,13 +955,15 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
             <section className="border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="max-w-2xl">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Start here</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">{t("dashboard_start_here")}</div>
                   <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
-                    Set up the basics in a few simple steps
+                    {t("dashboard_setup_title")}
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    SoloLedger becomes much more useful once you add a little context. You still have {setupRemainingCount}{" "}
-                    setup step{setupRemainingCount === 1 ? "" : "s"} left.
+                    {t("dashboard_setup_description", {
+                      count: setupRemainingCount,
+                      suffix: setupRemainingCount === 1 ? "" : "s",
+                    })}
                   </p>
                 </div>
 
@@ -967,7 +971,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                   href={{ pathname: "/", query: { prompt: "Guide me through setting up my SoloLedger workspace." } }}
                   className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
                 >
-                  Ask AI to guide setup
+                  {t("dashboard_setup_ai_guide")}
                 </Link>
               </div>
 
@@ -988,7 +992,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                             item.done ? "bg-emerald-600 text-white" : "bg-slate-900 text-white",
                           ].join(" ")}
                         >
-                          {item.done ? "OK" : "Next"}
+                          {item.done ? "OK" : t("common_next")}
                         </span>
                         <div className="text-sm font-semibold text-slate-950">{item.title}</div>
                       </div>
@@ -996,7 +1000,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                     </div>
 
                     {item.done ? (
-                      <StatusBadge tone="green">Done</StatusBadge>
+                      <StatusBadge tone="green">{t("common_done")}</StatusBadge>
                     ) : (
                       <button
                         type="button"
@@ -1135,6 +1139,29 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
 
       {activeView === "plan" ? (
         <>
+          <section className="border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">1. Start with 3-4 budget categories</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  You do not need a perfect setup. Start with your biggest spending areas and refine later.
+                </p>
+              </article>
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">2. Add one savings goal that matters</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  An emergency fund or a planned purchase is enough to give your monthly plan a real target.
+                </p>
+              </article>
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">3. Let the numbers teach you</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Your first budget does not need to be accurate. Use this month&apos;s real spending to improve it.
+                </p>
+              </article>
+            </div>
+          </section>
+
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <article className="border border-slate-200 bg-white p-5 shadow-sm">
               <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Budgets on track</div>
@@ -1408,6 +1435,29 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
 
       {activeView === "automation" ? (
         <>
+          <section className="border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">Track repeating money first</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Rent, salary, subscriptions, loans, and tax transfers are the best items to add here first.
+                </p>
+              </article>
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">Use one item for each repeat</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Keep each recurring payment or income source separate so the schedule stays easy to read.
+                </p>
+              </article>
+              <article className="border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-950">Log it when it happens</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Once an item is due, use &quot;Log now&quot; to turn it into a tracked transaction without retyping it.
+                </p>
+              </article>
+            </div>
+          </section>
+
           <section className="grid gap-4 md:grid-cols-3">
             <article className="border border-slate-200 bg-white p-5 shadow-sm">
               <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Active items</div>
@@ -1546,16 +1596,21 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         }}
       >
         <form onSubmit={onAddTransaction} className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+            Start simple: add one income you receive and one expense you pay often. That is enough to make the
+            dashboard useful.
+          </div>
+
           <div>
-            <label className="text-xs font-medium text-slate-600">Type</label>
+            <label className="text-xs font-medium text-slate-600">Money direction</label>
             <select
               value={form.type}
               onChange={(e) => updateForm("type", e.target.value as TransactionType)}
               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
               disabled={savingTransaction}
             >
-              <option value="expense">Expense</option>
-              <option value="income">Income</option>
+              <option value="expense">Money out (expense)</option>
+              <option value="income">Money in (income)</option>
             </select>
           </div>
 
@@ -1572,7 +1627,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Category</label>
+            <label className="text-xs font-medium text-slate-600">Category or purpose</label>
             <input
               value={form.category}
               onChange={(e) => updateForm("category", e.target.value)}
@@ -1583,7 +1638,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Note (optional)</label>
+            <label className="text-xs font-medium text-slate-600">Short note (optional)</label>
             <input
               value={form.note}
               onChange={(e) => updateForm("note", e.target.value)}
@@ -1594,7 +1649,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Date</label>
+            <label className="text-xs font-medium text-slate-600">When did it happen?</label>
             <input
               type="date"
               value={form.date}
@@ -1638,8 +1693,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         }}
       >
         <form onSubmit={onSaveBudget} className="grid gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+            A budget is simply a spending limit for one category. Start with categories where you usually overspend or
+            want more visibility.
+          </div>
+
           <div>
-            <label className="text-xs font-medium text-slate-600">Category</label>
+            <label className="text-xs font-medium text-slate-600">Category to watch</label>
             <input
               value={budgetForm.category}
               onChange={(e) => updateBudgetForm("category", e.target.value)}
@@ -1650,7 +1710,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Monthly limit (EUR)</label>
+            <label className="text-xs font-medium text-slate-600">Monthly spending limit (EUR)</label>
             <input
               value={budgetForm.monthlyLimit}
               onChange={(e) => updateBudgetForm("monthlyLimit", e.target.value)}
@@ -1662,7 +1722,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Alert threshold (%)</label>
+            <label className="text-xs font-medium text-slate-600">Alert me when I reach (%)</label>
             <input
               value={budgetForm.alertThreshold}
               onChange={(e) => updateBudgetForm("alertThreshold", e.target.value)}
@@ -1709,8 +1769,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         }}
       >
         <form onSubmit={onSaveGoal} className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+            Choose one goal that matters to you. It can be practical, like an emergency fund, or personal, like travel
+            or a new device.
+          </div>
+
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Goal name</label>
+            <label className="text-xs font-medium text-slate-600">What are you saving for?</label>
             <input
               value={goalForm.name}
               onChange={(e) => updateGoalForm("name", e.target.value)}
@@ -1733,7 +1798,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Current saved (EUR)</label>
+            <label className="text-xs font-medium text-slate-600">Already saved (EUR)</label>
             <input
               value={goalForm.currentAmount}
               onChange={(e) => updateGoalForm("currentAmount", e.target.value)}
@@ -1745,7 +1810,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Monthly contribution target (optional)</label>
+            <label className="text-xs font-medium text-slate-600">Planned monthly saving (optional)</label>
             <input
               value={goalForm.monthlyContributionTarget}
               onChange={(e) => updateGoalForm("monthlyContributionTarget", e.target.value)}
@@ -1768,7 +1833,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Status</label>
+            <label className="text-xs font-medium text-slate-600">Goal status</label>
             <select
               value={goalForm.status}
               onChange={(e) => updateGoalForm("status", e.target.value as SavingsGoalStatus)}
@@ -1817,8 +1882,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         }}
       >
         <form onSubmit={onSaveRecurring} className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+            Use this for money that repeats on a schedule, like salary, rent, subscriptions, loan payments, or tax
+            transfers.
+          </div>
+
           <div className="sm:col-span-2">
-            <label className="text-xs font-medium text-slate-600">Name</label>
+            <label className="text-xs font-medium text-slate-600">Item name</label>
             <input
               value={recurringForm.name}
               onChange={(e) => updateRecurringForm("name", e.target.value)}
@@ -1829,15 +1899,15 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Type</label>
+            <label className="text-xs font-medium text-slate-600">Money direction</label>
             <select
               value={recurringForm.type}
               onChange={(e) => updateRecurringForm("type", e.target.value as TransactionType)}
               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
               disabled={savingRecurring}
             >
-              <option value="expense">Expense</option>
-              <option value="income">Income</option>
+              <option value="expense">Money out (expense)</option>
+              <option value="income">Money in (income)</option>
             </select>
           </div>
 
@@ -1876,7 +1946,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Frequency</label>
+            <label className="text-xs font-medium text-slate-600">How often?</label>
             <select
               value={recurringForm.frequency}
               onChange={(e) => updateRecurringForm("frequency", e.target.value as RecurringFrequency)}
@@ -1889,7 +1959,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600">Cadence</label>
+            <label className="text-xs font-medium text-slate-600">Repeat every</label>
             <input
               value={recurringForm.cadence}
               onChange={(e) => updateRecurringForm("cadence", e.target.value)}
