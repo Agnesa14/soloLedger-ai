@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useLanguage } from "@/app/providers/LanguageProvider";
 
 export function Modal({
   open,
@@ -13,6 +14,8 @@ export function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  const { t } = useLanguage();
+
   useEffect(() => {
     if (!open) return;
 
@@ -38,9 +41,9 @@ export function Modal({
             <button
               onClick={onClose}
               className="rounded-xl px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
-              aria-label="Close"
+              aria-label={t("common_close")}
             >
-              Close
+              {t("common_close")}
             </button>
           </div>
           <div className="px-6 py-5">{children}</div>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../providers/AuthProvider";
+import { useLanguage } from "../providers/LanguageProvider";
 import { getErrorMessage } from "@/lib/errors";
 
 function isValidEmail(email: string) {
@@ -12,6 +13,7 @@ function isValidEmail(email: string) {
 export default function SignupPage() {
   const router = useRouter();
   const { user, loading, signUp } = useAuth();
+  const { t } = useLanguage();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -34,15 +36,15 @@ export default function SignupPage() {
     const normalizedEmail = email.trim().toLowerCase();
 
     if (trimmedName.length < 2) {
-      setError("Name must be at least 2 characters.");
+      setError(t("auth_name_short"));
       return;
     }
     if (!isValidEmail(normalizedEmail)) {
-      setError("Please enter a valid email address.");
+      setError(t("auth_invalid_email"));
       return;
     }
     if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+      setError(t("auth_password_short"));
       return;
     }
 
@@ -50,10 +52,10 @@ export default function SignupPage() {
     try {
       await signUp({ email: normalizedEmail, password, name: trimmedName });
 
-      setInfo("Account created. Please confirm your email before logging in.");
+      setInfo(t("auth_account_created"));
       setTimeout(() => router.push("/login?checkEmail=1"), 800);
     } catch (signUpError) {
-      setError(getErrorMessage(signUpError, "Signup failed. Please try again."));
+      setError(getErrorMessage(signUpError, t("auth_signup_failed")));
     } finally {
       setSubmitting(false);
     }
@@ -62,47 +64,47 @@ export default function SignupPage() {
   return (
     <main className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-md px-4 py-12">
-        <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Sign Up</h1>
-        <p className="mt-2 text-sm text-gray-600">Create an account to use the app.</p>
+        <h1 className="text-3xl font-semibold tracking-tight text-gray-900">{t("auth_signup_title")}</h1>
+        <p className="mt-2 text-sm text-gray-600">{t("auth_signup_subtitle")}</p>
 
         <form
           onSubmit={onSubmit}
           className="mt-6 space-y-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm"
         >
           <div>
-            <label className="text-sm font-medium text-gray-900">Name</label>
+            <label className="text-sm font-medium text-gray-900">{t("auth_name")}</label>
             <input
               className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
               value={name}
               onChange={(e) => setName(e.target.value)}
               type="text"
-              placeholder="Your name"
+              placeholder={t("auth_name_placeholder")}
               disabled={submitting}
               autoComplete="name"
             />
           </div>
 
           <div>
-            <label className="text-sm font-medium text-gray-900">Email</label>
+            <label className="text-sm font-medium text-gray-900">{t("auth_email")}</label>
             <input
               className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               type="email"
-              placeholder="you@example.com"
+              placeholder={t("auth_email_placeholder")}
               disabled={submitting}
               autoComplete="email"
             />
           </div>
 
           <div>
-            <label className="text-sm font-medium text-gray-900">Password</label>
+            <label className="text-sm font-medium text-gray-900">{t("auth_password")}</label>
             <input
               className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
-              placeholder="min 6 characters"
+              placeholder={t("auth_password_placeholder")}
               disabled={submitting}
               autoComplete="new-password"
             />
@@ -125,7 +127,7 @@ export default function SignupPage() {
             disabled={submitting}
             className="w-full rounded-xl bg-black py-3 text-sm font-medium text-white disabled:opacity-60"
           >
-            {submitting ? "Creating..." : "Create account"}
+            {submitting ? t("auth_signup_loading") : t("auth_signup_button")}
           </button>
 
           <button
@@ -134,7 +136,7 @@ export default function SignupPage() {
             className="w-full rounded-xl border border-gray-200 bg-white py-3 text-sm font-medium text-gray-900"
             disabled={submitting}
           >
-            Back to login
+            {t("auth_back_to_login")}
           </button>
         </form>
       </div>
