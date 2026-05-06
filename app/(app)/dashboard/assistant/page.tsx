@@ -3,8 +3,8 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useAuth } from "../providers/AuthProvider";
-import { useLanguage } from "../providers/LanguageProvider";
+import { useAuth } from "../../../providers/AuthProvider";
+import { useLanguage } from "../../../providers/LanguageProvider";
 import { getErrorMessage, hasMessage } from "@/lib/errors";
 import {
   buildFinancialSnapshot,

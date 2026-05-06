@@ -8,11 +8,13 @@ export function Modal({
   title,
   children,
   onClose,
+  size = "md",
 }: {
   open: boolean;
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  size?: "md" | "xl";
 }) {
   const { t } = useLanguage();
 
@@ -35,7 +37,12 @@ export function Modal({
         onClick={onClose}
       />
       <div className="absolute inset-0 grid place-items-center p-4">
-        <div className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white shadow-[0_20px_80px_rgba(2,6,23,0.35)]">
+        <div
+          className={[
+            "w-full rounded-3xl border border-slate-200 bg-white shadow-[0_20px_80px_rgba(2,6,23,0.35)]",
+            size === "xl" ? "max-w-6xl" : "max-w-lg",
+          ].join(" ")}
+        >
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
             <div className="text-base font-semibold text-slate-900">{title}</div>
             <button

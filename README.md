@@ -1,6 +1,6 @@
 # SoloLedger AI
 
-Live demo: https://solo-ledger-ai.vercel.app/
+Production URL: https://solo-ledger-ai.vercel.app/
 
 SoloLedger AI is a Next.js + TypeScript app for personal finance tracking with an authenticated AI assistant. Users can sign up, log in, chat with the assistant, and manage their own transactions from a protected dashboard.
 
@@ -65,14 +65,14 @@ Run the SQL migrations in your Supabase project before using planning features:
 
 ## Notes
 
-- If `OPENROUTER_API_KEY` is missing, the app falls back to a mock AI response for easier local demos.
+- If `OPENROUTER_API_KEY` is missing, the app falls back to a local mock AI response so development is not blocked.
 - For production on Vercel, add the same environment variables in Project Settings -> Environment Variables.
 - Make sure your Supabase project includes the `chat_messages`, `transactions`, `budgets`, `savings_goals`, and `recurring_transactions` tables with RLS enabled.
 - The repo now includes a migration at `supabase/migrations/20260422_add_budgets_and_savings_goals.sql` for the new planning layer.
 - The repo also includes `supabase/migrations/20260425_add_recurring_transactions.sql` for the recurring planner.
 
-## Demo readiness
+## Product readiness
 
-- Live demo target: `https://solo-ledger-ai.vercel.app/`
-- Presentation plan: [docs/demo-plan.md](docs/demo-plan.md)
-- For the strongest demo, use an account with seeded transactions, budgets, savings goals, and recurring items so the dashboard and AI assistant show meaningful results.
+- Production target: `https://solo-ledger-ai.vercel.app/`
+- Presentation plan: [docs/product-presentation-plan.md](docs/product-presentation-plan.md)
+- For product walkthroughs and testing, use an account with transactions, budgets, savings goals, and recurring items so the dashboard and AI assistant show meaningful results.

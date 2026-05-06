@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useAuth } from "../providers/AuthProvider";
 import { useLanguage } from "../providers/LanguageProvider";
 import { getErrorMessage } from "@/lib/errors";
@@ -62,19 +63,62 @@ export default function SignupPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-md px-4 py-12">
-        <h1 className="text-3xl font-semibold tracking-tight text-gray-900">{t("auth_signup_title")}</h1>
-        <p className="mt-2 text-sm text-gray-600">{t("auth_signup_subtitle")}</p>
+    <main className="min-h-screen bg-[#f5f6f7] text-slate-950">
+      <div className="grid min-h-screen w-full grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
+        <section className="hidden border-r border-slate-200 bg-white px-8 py-10 lg:block">
+          <BrandLogo />
 
-        <form
-          onSubmit={onSubmit}
-          className="mt-6 space-y-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm"
-        >
+          <div className="mt-16 max-w-2xl">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+              Create your finance workspace
+            </div>
+            <h1 className="mt-5 text-4xl font-semibold tracking-tight text-slate-950">
+              Start with the basics, then let the workspace turn records into decisions.
+            </h1>
+            <p className="mt-5 text-base leading-8 text-slate-600">
+              Add a first income, a few expenses, one budget, and one savings goal. SoloLedger AI uses that structure
+              to surface useful financial signals from day one.
+            </p>
+          </div>
+
+          <div className="mt-12 grid max-w-3xl gap-4">
+            {[
+              ["1", "Track", "Record income and expenses in EUR with category-level clarity."],
+              ["2", "Plan", "Set spending guardrails and goal targets for the current month."],
+              ["3", "Ask", "Use the AI assistant to turn financial context into practical next steps."],
+            ].map(([step, title, detail]) => (
+              <div key={step} className="flex gap-4 border border-slate-200 bg-slate-50 p-4">
+                <div className="grid h-9 w-9 shrink-0 place-items-center bg-slate-950 text-sm font-semibold text-white">
+                  {step}
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-950">{title}</div>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">{detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="flex min-h-screen items-center px-5 py-8 sm:px-8">
+          <div className="mx-auto w-full max-w-md">
+            <div className="mb-8 lg:hidden">
+              <BrandLogo compact />
+            </div>
+
+            <header>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+                New workspace
+              </div>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{t("auth_signup_title")}</h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600">{t("auth_signup_subtitle")}</p>
+            </header>
+
+            <form onSubmit={onSubmit} className="mt-7 space-y-4 border border-slate-200 bg-white p-6 shadow-sm">
           <div>
-            <label className="text-sm font-medium text-gray-900">{t("auth_name")}</label>
+            <label className="text-sm font-medium text-slate-900">{t("auth_name")}</label>
             <input
-              className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
+              className="mt-2 w-full border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 outline-none transition focus:border-slate-950 focus:bg-white"
               value={name}
               onChange={(e) => setName(e.target.value)}
               type="text"
@@ -85,9 +129,9 @@ export default function SignupPage() {
           </div>
 
           <div>
-            <label className="text-sm font-medium text-gray-900">{t("auth_email")}</label>
+            <label className="text-sm font-medium text-slate-900">{t("auth_email")}</label>
             <input
-              className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
+              className="mt-2 w-full border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 outline-none transition focus:border-slate-950 focus:bg-white"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               type="email"
@@ -98,9 +142,9 @@ export default function SignupPage() {
           </div>
 
           <div>
-            <label className="text-sm font-medium text-gray-900">{t("auth_password")}</label>
+            <label className="text-sm font-medium text-slate-900">{t("auth_password")}</label>
             <input
-              className="mt-2 w-full rounded-xl border border-gray-200 p-3 outline-none focus:ring-4 focus:ring-black/10"
+              className="mt-2 w-full border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 outline-none transition focus:border-slate-950 focus:bg-white"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
@@ -111,13 +155,13 @@ export default function SignupPage() {
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {error}
             </div>
           ) : null}
 
           {info ? (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
+            <div className="border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
               {info}
             </div>
           ) : null}
@@ -125,7 +169,7 @@ export default function SignupPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded-xl bg-black py-3 text-sm font-medium text-white disabled:opacity-60"
+            className="w-full border border-slate-950 bg-slate-950 py-3 text-sm font-medium text-white transition hover:bg-black disabled:opacity-60"
           >
             {submitting ? t("auth_signup_loading") : t("auth_signup_button")}
           </button>
@@ -133,12 +177,18 @@ export default function SignupPage() {
           <button
             type="button"
             onClick={() => router.push("/login")}
-            className="w-full rounded-xl border border-gray-200 bg-white py-3 text-sm font-medium text-gray-900"
+            className="w-full border border-slate-200 bg-white py-3 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
             disabled={submitting}
           >
             {t("auth_back_to_login")}
           </button>
-        </form>
+            </form>
+
+            <p className="mt-6 text-center text-xs leading-5 text-slate-500">
+              Your workspace becomes useful after the first income, expense, budget, and goal.
+            </p>
+          </div>
+        </section>
       </div>
     </main>
   );

@@ -2,7 +2,8 @@
 
 import { Suspense } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useAuth } from "../providers/AuthProvider";
 import { useLanguage } from "../providers/LanguageProvider";
 
@@ -43,20 +44,44 @@ function SidebarLink({
   );
 }
 
+function SidebarSubLink({
+  href,
+  label,
+  active,
+}: {
+  href: string;
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={[
+        "block border-l px-4 py-2 text-sm transition",
+        active
+          ? "border-emerald-400 bg-slate-900 text-white"
+          : "border-slate-800 text-slate-500 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-300",
+      ].join(" ")}
+    >
+      {label}
+    </Link>
+  );
+}
+
 function AppLayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const { user, loading, signOut } = useAuth();
   const { language, setLanguage, t } = useLanguage();
+  const planningSection = searchParams.get("section") === "goals" ? "goals" : "budgets";
 
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95">
-        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
+        <div className="flex w-full items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
           <div>
-            <Link href="/dashboard" className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-950">
-              SoloLedger AI
-            </Link>
+            <BrandLogo href="/dashboard" compact />
             <p className="mt-1 text-xs text-slate-500">{t("app_tagline")}</p>
           </div>
 
@@ -94,7 +119,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1380px] grid-cols-1 gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <div className="grid w-full grid-cols-1 gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:px-8">
         <aside className="lg:sticky lg:top-24 lg:h-fit">
           <div className="border border-slate-900 bg-slate-950 p-4 text-white shadow-sm">
             <div className="border border-slate-800 bg-slate-900 p-4">
@@ -118,6 +143,20 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                 caption={t("nav_planning_caption")}
                 active={pathname === "/dashboard/plan"}
               />
+              {pathname === "/dashboard/plan" ? (
+                <div className="ml-4 space-y-1 border-l border-slate-800 pl-3">
+                  <SidebarSubLink
+                    href="/dashboard/plan?section=budgets"
+                    label="Budgets"
+                    active={planningSection === "budgets"}
+                  />
+                  <SidebarSubLink
+                    href="/dashboard/plan?section=goals"
+                    label="Goals"
+                    active={planningSection === "goals"}
+                  />
+                </div>
+              ) : null}
               <SidebarLink
                 href="/dashboard/automation"
                 label={t("nav_recurring")}
@@ -125,10 +164,10 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                 active={pathname === "/dashboard/automation"}
               />
               <SidebarLink
-                href="/"
+                href="/dashboard/assistant"
                 label={t("nav_ai_assistant")}
                 caption={t("nav_ai_assistant_caption")}
-                active={pathname === "/"}
+                active={pathname === "/dashboard/assistant"}
               />
             </nav>
 
@@ -151,7 +190,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <Suspense
       fallback={
-        <div className="mx-auto max-w-[1380px] px-4 py-8 sm:px-6">
+        <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
           <main className="min-w-0">{children}</main>
         </div>
       }

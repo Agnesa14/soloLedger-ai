@@ -2,9 +2,11 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../providers/AuthProvider";
 import { useLanguage } from "../../providers/LanguageProvider";
+import { BrandLogo } from "@/components/BrandLogo";
 import { getLocalDateInputValue } from "@/lib/dates";
 import { getErrorMessage } from "@/lib/errors";
 import {
@@ -14,9 +16,13 @@ import {
   buildPlanningSnapshot,
   deleteMyBudget,
   deleteMySavingsGoal,
+  deleteMySavingsGoalContribution,
+  insertMySavingsGoalContribution,
   loadMyBudgets,
+  loadMySavingsGoalContributions,
   loadMySavingsGoals,
   type BudgetRow,
+  type SavingsGoalContributionRow,
   type SavingsGoalRow,
   type SavingsGoalStatus,
   upsertMyBudget,
@@ -95,6 +101,8 @@ type DashboardSummary = {
 };
 
 type DashboardView = "overview" | "plan" | "automation";
+type TransactionPeriodMode = "week" | "month" | "all";
+type PlanningSection = "budgets" | "goals";
 
 type TransactionFormState = {
   type: TransactionType;
@@ -119,6 +127,14 @@ type SavingsGoalFormState = {
   monthlyContributionTarget: string;
   targetDate: string;
   status: SavingsGoalStatus;
+};
+
+type GoalContributionFormState = {
+  goalId: number | null;
+  goalName: string;
+  amount: string;
+  contributionDate: string;
+  note: string;
 };
 
 type RecurringFormState = {
@@ -155,6 +171,14 @@ const initialGoalFormState = (): SavingsGoalFormState => ({
   monthlyContributionTarget: "",
   targetDate: "",
   status: "active",
+});
+
+const initialGoalContributionFormState = (): GoalContributionFormState => ({
+  goalId: null,
+  goalName: "",
+  amount: "",
+  contributionDate: getLocalDateInputValue(),
+  note: "",
 });
 
 const initialRecurringFormState = (): RecurringFormState => ({
@@ -227,6 +251,22 @@ function validateGoalForm(form: SavingsGoalFormState) {
   return "";
 }
 
+function validateGoalContributionForm(form: GoalContributionFormState) {
+  const amount = Number(form.amount);
+
+  if (!form.goalId) {
+    return "Savings goal is required.";
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return "Contribution amount must be greater than 0.";
+  }
+  if (!form.contributionDate) {
+    return "Contribution date is required.";
+  }
+
+  return "";
+}
+
 function validateRecurringForm(form: RecurringFormState) {
   const amount = Number(form.amount);
   const cadence = Number(form.cadence);
@@ -293,6 +333,74 @@ function formatTargetDate(value: string | null) {
   }).format(date);
 }
 
+function parseTransactionDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function getTransactionMonthKey(value: string) {
+  return value.slice(0, 7);
+}
+
+function getTransactionWeekKey(value: string) {
+  const date = parseTransactionDate(value);
+  const day = date.getDay() || 7;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - day + 1);
+  return getLocalDateInputValue(monday);
+}
+
+function formatTransactionDate(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(parseTransactionDate(value));
+}
+
+function formatTransactionMonth(value: string) {
+  const [year, month] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month - 1, 1));
+}
+
+function formatTransactionWeek(value: string) {
+  const start = parseTransactionDate(value);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return `${formatTransactionDate(getLocalDateInputValue(start))} - ${formatTransactionDate(getLocalDateInputValue(end))}`;
+}
+
+function summarizeTransactions(rows: TransactionRow[]) {
+  const income = rows
+    .filter((transaction) => transaction.type === "income")
+    .reduce((sum, transaction) => sum + Number(transaction.amount ?? 0), 0);
+  const expenses = rows
+    .filter((transaction) => transaction.type === "expense")
+    .reduce((sum, transaction) => sum + Number(transaction.amount ?? 0), 0);
+
+  return {
+    income,
+    expenses,
+    net: income - expenses,
+  };
+}
+
+function groupTransactionsByDate(rows: TransactionRow[]) {
+  const groups = new Map<string, TransactionRow[]>();
+  for (const transaction of rows) {
+    const items = groups.get(transaction.date) ?? [];
+    items.push(transaction);
+    groups.set(transaction.date, items);
+  }
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([date, transactions]) => ({ date, transactions }));
+}
+
 function formatRecurringFrequency(frequency: RecurringFrequency, cadence: number) {
   const unit = frequency === "weekly" ? "week" : "month";
   return cadence === 1 ? `Every ${unit}` : `Every ${cadence} ${unit}s`;
@@ -300,6 +408,7 @@ function formatRecurringFrequency(frequency: RecurringFrequency, cadence: number
 
 export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading } = useAuth();
   const { t } = useLanguage();
 
@@ -307,6 +416,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const [savingTransaction, setSavingTransaction] = useState(false);
   const [savingBudget, setSavingBudget] = useState(false);
   const [savingGoal, setSavingGoal] = useState(false);
+  const [savingGoalContribution, setSavingGoalContribution] = useState(false);
   const [savingRecurring, setSavingRecurring] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
@@ -318,20 +428,38 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const [monthTransactions, setMonthTransactions] = useState<TransactionRow[]>([]);
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
   const [goals, setGoals] = useState<SavingsGoalRow[]>([]);
+  const [goalContributions, setGoalContributions] = useState<SavingsGoalContributionRow[]>([]);
   const [recurringItems, setRecurringItems] = useState<RecurringTransactionRow[]>([]);
 
   const [openAdd, setOpenAdd] = useState(false);
   const [openBudgetModal, setOpenBudgetModal] = useState(false);
   const [openGoalModal, setOpenGoalModal] = useState(false);
+  const [openGoalContributionModal, setOpenGoalContributionModal] = useState(false);
   const [openRecurringModal, setOpenRecurringModal] = useState(false);
+  const [openTransactionsModal, setOpenTransactionsModal] = useState(false);
+  const [transactionPeriodMode, setTransactionPeriodMode] = useState<TransactionPeriodMode>("week");
   const [form, setForm] = useState<TransactionFormState>(initialFormState());
   const [budgetForm, setBudgetForm] = useState<BudgetFormState>(initialBudgetFormState());
   const [goalForm, setGoalForm] = useState<SavingsGoalFormState>(initialGoalFormState());
+  const [goalContributionForm, setGoalContributionForm] = useState<GoalContributionFormState>(
+    initialGoalContributionFormState()
+  );
   const [recurringForm, setRecurringForm] = useState<RecurringFormState>(initialRecurringFormState());
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
+
+  useEffect(() => {
+    if (!info && !error) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setInfo("");
+      setError("");
+    }, error ? 6500 : 4200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [error, info]);
 
   useEffect(() => {
     if (!user) return;
@@ -355,14 +483,16 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         monthTransactionsResult,
         budgetsResult,
         goalsResult,
+        goalContributionsResult,
         recurringResult,
       ] =
         await Promise.allSettled([
           getMyMonthSummary(year, month),
-          loadMyRecentTransactions(60),
+          loadMyRecentTransactions(200),
           loadMyTransactionsForMonth(year, month),
           loadMyBudgets(),
           loadMySavingsGoals(),
+          loadMySavingsGoalContributions(),
           loadMyRecurringTransactions(),
         ]);
 
@@ -412,6 +542,15 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         planningErrors.push(getErrorMessage(goalsResult.reason, "Failed to load savings goals."));
       }
 
+      if (goalContributionsResult.status === "fulfilled") {
+        setGoalContributions(goalContributionsResult.value);
+      } else {
+        setGoalContributions([]);
+        planningErrors.push(
+          "Savings goal contribution history is unavailable until the new Supabase contribution table is ready."
+        );
+      }
+
       if (planningErrors.length > 0) {
         setPlanningError("Planning tools are unavailable until the new Supabase budgets/goals tables are ready.");
       }
@@ -438,12 +577,16 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
   const formError = validateTransactionForm(form);
   const budgetFormError = validateBudgetForm(budgetForm);
   const goalFormError = validateGoalForm(goalForm);
+  const goalContributionFormError = validateGoalContributionForm(goalContributionForm);
   const recurringFormError = validateRecurringForm(recurringForm);
   const canSaveTransaction = !savingTransaction && !formError;
   const canSaveBudget = !savingBudget && !budgetFormError;
   const canSaveGoal = !savingGoal && !goalFormError;
+  const canSaveGoalContribution = !savingGoalContribution && !goalContributionFormError;
   const canSaveRecurring = !savingRecurring && !recurringFormError;
   const activeView = view;
+  const activePlanningSection: PlanningSection =
+    searchParams.get("section") === "goals" ? "goals" : "budgets";
   const currentDate = new Date();
   const todayDateKey = getLocalDateInputValue(currentDate);
   const currentYear = currentDate.getFullYear();
@@ -470,8 +613,9 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         transactions: monthTransactions,
         budgets,
         goals,
+        contributions: goalContributions,
       }),
-    [currentMonth, currentYear, monthTransactions, budgets, goals]
+    [currentMonth, currentYear, monthTransactions, budgets, goals, goalContributions]
   );
   const recurringSnapshot = useMemo(() => buildRecurringSnapshot(recurringItems), [recurringItems]);
   const weeklyPulse = useMemo(() => buildWeeklyPulseSnapshot(recent, recurringItems), [recent, recurringItems]);
@@ -492,8 +636,51 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
   ]);
   const leadPrompt =
     aiPlaybooks[0] ?? "Review my latest spending and give me one concrete action for this week.";
-  const recentFeed = useMemo(() => visibleRecent.slice(0, 6), [visibleRecent]);
+  const recentFeed = useMemo(() => visibleRecent.slice(0, 4), [visibleRecent]);
   const upcomingRecurring = useMemo(() => recurringSnapshot.upcoming.slice(0, 6), [recurringSnapshot.upcoming]);
+  const currentWeekKey = getTransactionWeekKey(todayDateKey);
+  const currentWeekTransactions = useMemo(
+    () => recent.filter((transaction) => getTransactionWeekKey(transaction.date) === currentWeekKey),
+    [currentWeekKey, recent]
+  );
+  const currentWeekTransactionSummary = useMemo(
+    () => summarizeTransactions(currentWeekTransactions),
+    [currentWeekTransactions]
+  );
+  const monthTransactionSummary = useMemo(() => summarizeTransactions(monthTransactions), [monthTransactions]);
+  const transactionWeekOptions = useMemo(() => {
+    return [...new Set(recent.map((transaction) => getTransactionWeekKey(transaction.date)))].sort((left, right) =>
+      right.localeCompare(left)
+    );
+  }, [recent]);
+  const transactionMonthOptions = useMemo(() => {
+    return [...new Set(recent.map((transaction) => getTransactionMonthKey(transaction.date)))].sort((left, right) =>
+      right.localeCompare(left)
+    );
+  }, [recent]);
+  const [selectedTransactionWeek, setSelectedTransactionWeek] = useState("");
+  const [selectedTransactionMonth, setSelectedTransactionMonth] = useState("");
+  const activeTransactionWeek = selectedTransactionWeek || transactionWeekOptions[0] || currentWeekKey;
+  const activeTransactionMonth = selectedTransactionMonth || transactionMonthOptions[0] || currentMonthKey;
+  const filteredTransactions = useMemo(() => {
+    if (transactionPeriodMode === "week") {
+      return recent.filter((transaction) => getTransactionWeekKey(transaction.date) === activeTransactionWeek);
+    }
+
+    if (transactionPeriodMode === "month") {
+      return recent.filter((transaction) => getTransactionMonthKey(transaction.date) === activeTransactionMonth);
+    }
+
+    return recent;
+  }, [activeTransactionMonth, activeTransactionWeek, recent, transactionPeriodMode]);
+  const filteredTransactionSummary = useMemo(
+    () => summarizeTransactions(filteredTransactions),
+    [filteredTransactions]
+  );
+  const groupedFilteredTransactions = useMemo(
+    () => groupTransactionsByDate(filteredTransactions),
+    [filteredTransactions]
+  );
   const focusItems = useMemo(() => {
     const next: string[] = [];
 
@@ -604,7 +791,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         date: form.date,
       });
 
-      setRecent((prev) => [row, ...prev].slice(0, 60));
+      setRecent((prev) => [row, ...prev].slice(0, 200));
       if (row.date.startsWith(currentMonthKey)) {
         setMonthTransactions((prev) => [row, ...prev]);
       }
@@ -635,6 +822,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
 
   function updateGoalForm<K extends keyof SavingsGoalFormState>(key: K, value: SavingsGoalFormState[K]) {
     setGoalForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updateGoalContributionForm<K extends keyof GoalContributionFormState>(
+    key: K,
+    value: GoalContributionFormState[K]
+  ) {
+    setGoalContributionForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function updateRecurringForm<K extends keyof RecurringFormState>(key: K, value: RecurringFormState[K]) {
@@ -672,6 +866,17 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
     }
 
     setOpenGoalModal(true);
+  }
+
+  function openGoalContributionEditor(goal: SavingsGoalRow | { id: number; name: string }) {
+    setGoalContributionForm({
+      goalId: goal.id,
+      goalName: goal.name,
+      amount: "",
+      contributionDate: getLocalDateInputValue(),
+      note: "",
+    });
+    setOpenGoalContributionModal(true);
   }
 
   function openRecurringEditor(item?: RecurringTransactionRow) {
@@ -778,6 +983,49 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
     }
   }
 
+  async function onSaveGoalContribution(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSaveGoalContribution || !goalContributionForm.goalId) return;
+
+    setSavingGoalContribution(true);
+    setError("");
+    setInfo("");
+
+    try {
+      const saved = await insertMySavingsGoalContribution({
+        goal_id: goalContributionForm.goalId,
+        amount: Number(goalContributionForm.amount),
+        contribution_date: goalContributionForm.contributionDate,
+        note: goalContributionForm.note,
+      });
+
+      setGoalContributions((prev) => [saved, ...prev]);
+      setOpenGoalContributionModal(false);
+      setGoalContributionForm(initialGoalContributionFormState());
+      setInfo("Savings contribution added.");
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, "Failed to add savings contribution."));
+    } finally {
+      setSavingGoalContribution(false);
+    }
+  }
+
+  async function onDeleteGoalContribution(id: number) {
+    const confirmed = window.confirm("Delete this savings contribution?");
+    if (!confirmed) return;
+
+    setError("");
+    setInfo("");
+
+    try {
+      await deleteMySavingsGoalContribution(id);
+      setGoalContributions((prev) => prev.filter((contribution) => contribution.id !== id));
+      setInfo("Savings contribution deleted.");
+    } catch (deleteError) {
+      setError(getErrorMessage(deleteError, "Failed to delete savings contribution."));
+    }
+  }
+
   async function onDeleteGoal(id: number) {
     const confirmed = window.confirm("Delete this savings goal?");
     if (!confirmed) return;
@@ -857,7 +1105,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         const withoutCurrent = prev.filter((item) => item.id !== result.recurring.id);
         return sortRecurring([...withoutCurrent, result.recurring]);
       });
-      setRecent((prev) => [result.transaction, ...prev].slice(0, 60));
+      setRecent((prev) => [result.transaction, ...prev].slice(0, 200));
       if (result.transaction.date.startsWith(currentMonthKey)) {
         setMonthTransactions((prev) => [result.transaction, ...prev]);
         setSummary((prev) => {
@@ -880,7 +1128,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
       <section className="border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">SoloLedger AI</div>
+            <BrandLogo href="/dashboard" compact />
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{pageHeading}</h1>
             <p className="mt-2 text-sm leading-6 text-slate-600">
               {pageDescription} {activeView === "overview" ? `Month: ${currentMonthLabel}.` : null}
@@ -902,18 +1150,21 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
 
             {activeView === "plan" ? (
               <>
-                <button
-                  onClick={() => openBudgetEditor()}
-                  className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
-                >
-                  {t("dashboard_add_budget")}
-                </button>
-                <button
-                  onClick={() => openGoalEditor()}
-                  className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
-                >
-                  {t("dashboard_add_goal")}
-                </button>
+                {activePlanningSection === "budgets" ? (
+                  <button
+                    onClick={() => openBudgetEditor()}
+                    className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+                  >
+                    {t("dashboard_add_budget")}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => openGoalEditor()}
+                    className="border border-slate-950 bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+                  >
+                    {t("dashboard_add_goal")}
+                  </button>
+                )}
               </>
             ) : null}
 
@@ -927,7 +1178,11 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
             ) : null}
 
             <Link
-              href={activeView === "overview" ? { pathname: "/", query: { prompt: leadPrompt } } : "/"}
+              href={
+                activeView === "overview"
+                  ? { pathname: "/dashboard/assistant", query: { prompt: leadPrompt } }
+                  : "/dashboard/assistant"
+              }
               className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
             >
               {t("dashboard_open_ai")}
@@ -936,18 +1191,21 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
         </div>
       </section>
 
-      {info ? (
-        <div className="rounded-xl border border-blue-200/80 bg-blue-50 px-5 py-4 text-sm text-blue-900 shadow-sm">
-          {info}
-        </div>
-      ) : null}
+      <div className="fixed right-4 top-24 z-40 w-[calc(100vw-2rem)] max-w-md space-y-3 sm:right-6 lg:right-8">
+        {info ? (
+          <div className="border border-blue-200 bg-blue-50 px-5 py-4 text-sm text-blue-900 shadow-[0_12px_40px_rgba(15,23,42,0.18)]">
+            <div className="font-semibold">Saved</div>
+            <div className="mt-1 leading-6 text-blue-800">{info}</div>
+          </div>
+        ) : null}
 
-      {error ? (
-        <div className="rounded-xl border border-red-200/80 bg-red-50 px-5 py-4 text-sm text-red-900 shadow-sm">
-          <div className="font-semibold">Error</div>
-          <div className="mt-1 text-red-800">{error}</div>
-        </div>
-      ) : null}
+        {error ? (
+          <div className="border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-900 shadow-[0_12px_40px_rgba(15,23,42,0.18)]">
+            <div className="font-semibold">Error</div>
+            <div className="mt-1 leading-6 text-red-800">{error}</div>
+          </div>
+        ) : null}
+      </div>
 
       {activeView === "overview" ? (
         <>
@@ -968,7 +1226,10 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                 </div>
 
                 <Link
-                  href={{ pathname: "/", query: { prompt: "Guide me through setting up my SoloLedger workspace." } }}
+                  href={{
+                    pathname: "/dashboard/assistant",
+                    query: { prompt: "Guide me through setting up my SoloLedger workspace." },
+                  }}
                   className="border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
                 >
                   {t("dashboard_setup_ai_guide")}
@@ -1078,7 +1339,7 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                       : "Ask the assistant to review your latest spending and suggest one simple next step."}
                   </p>
                   <Link
-                    href={{ pathname: "/", query: { prompt: leadPrompt } }}
+                    href={{ pathname: "/dashboard/assistant", query: { prompt: leadPrompt } }}
                     className="mt-4 inline-flex border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
                   >
                     Ask with context
@@ -1088,12 +1349,68 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
             </article>
 
             <section className="border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Transactions</div>
-                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Recent activity</h2>
+                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Transaction activity</h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Recent records stay short here. Use the full history to review income and expenses by week or month.
+                  </p>
                 </div>
-                {dashboardLoading ? <span className="text-sm text-slate-500">Loading...</span> : null}
+                <div className="flex flex-wrap items-center gap-2">
+                  {dashboardLoading ? <span className="text-sm text-slate-500">Loading...</span> : null}
+                  <button
+                    type="button"
+                    onClick={() => setOpenTransactionsModal(true)}
+                    className="border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                  >
+                    View transaction history
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Current week</div>
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <div className="text-slate-500">Income</div>
+                      <div className="mt-1 font-semibold text-emerald-700">
+                        {formatEUR(currentWeekTransactionSummary.income)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Expenses</div>
+                      <div className="mt-1 font-semibold text-rose-700">
+                        {formatEUR(currentWeekTransactionSummary.expenses)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Net</div>
+                      <div className="mt-1 font-semibold text-slate-950">
+                        {formatEUR(currentWeekTransactionSummary.net)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Current month</div>
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <div className="text-slate-500">Income</div>
+                      <div className="mt-1 font-semibold text-emerald-700">{formatEUR(monthTransactionSummary.income)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Expenses</div>
+                      <div className="mt-1 font-semibold text-rose-700">{formatEUR(monthTransactionSummary.expenses)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Net</div>
+                      <div className="mt-1 font-semibold text-slate-950">{formatEUR(monthTransactionSummary.net)}</div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="mt-5 space-y-3">
@@ -1132,6 +1449,16 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                   })
                 )}
               </div>
+
+              {recent.length > recentFeed.length ? (
+                <button
+                  type="button"
+                  onClick={() => setOpenTransactionsModal(true)}
+                  className="mt-4 w-full border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-900 transition hover:bg-white"
+                >
+                  View more transactions
+                </button>
+              ) : null}
             </section>
           </section>
         </>
@@ -1140,53 +1467,51 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
       {activeView === "plan" ? (
         <>
           <section className="border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="grid gap-4 lg:grid-cols-3">
-              <article className="border border-slate-200 bg-slate-50 p-4">
-                <div className="text-sm font-semibold text-slate-950">1. Start with 3-4 budget categories</div>
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+              <div className="max-w-2xl">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+                  Planning workspace
+                </div>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+                  {activePlanningSection === "budgets" ? "Spending control" : "Savings goals"}
+                </h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  You do not need a perfect setup. Start with your biggest spending areas and refine later.
+                  {activePlanningSection === "budgets"
+                    ? "Budgets help you control the categories where money leaves the account."
+                    : "Goals track longer-term priorities with dated savings contributions and progress."}
                 </p>
-              </article>
-              <article className="border border-slate-200 bg-slate-50 p-4">
-                <div className="text-sm font-semibold text-slate-950">2. Add one savings goal that matters</div>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  An emergency fund or a planned purchase is enough to give your monthly plan a real target.
-                </p>
-              </article>
-              <article className="border border-slate-200 bg-slate-50 p-4">
-                <div className="text-sm font-semibold text-slate-950">3. Let the numbers teach you</div>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Your first budget does not need to be accurate. Use this month&apos;s real spending to improve it.
-                </p>
-              </article>
+              </div>
             </div>
           </section>
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <article className="border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Budgets on track</div>
-              <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.budgetsOnTrack}</div>
-            </article>
-            <article className="border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Budgets at risk</div>
-              <div className="mt-3 text-3xl font-semibold text-slate-950">
-                {planningSnapshot.budgetsAtRisk + planningSnapshot.budgetsOverLimit}
-              </div>
-            </article>
-            <article className="border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Active goals</div>
-              <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.activeGoalCount}</div>
-            </article>
-            <article className="border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Goal load</div>
-              <div className="mt-3 text-3xl font-semibold text-slate-950">
-                {formatEUR(planningSnapshot.totalMonthlyGoalTarget)}
-              </div>
-            </article>
-          </section>
+          {activePlanningSection === "budgets" ? (
+            <>
+              <section className="grid gap-4 md:grid-cols-3">
+                <article className="border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Budgets on track
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.budgetsOnTrack}</div>
+                </article>
+                <article className="border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Budgets at risk
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold text-slate-950">
+                    {planningSnapshot.budgetsAtRisk + planningSnapshot.budgetsOverLimit}
+                  </div>
+                </article>
+                <article className="border border-slate-950 bg-slate-950 p-5 text-white shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    Unbudgeted spend
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold">
+                    {formatEUR(planningSnapshot.unbudgetedExpenseTotal)}
+                  </div>
+                </article>
+              </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
-          <div className="border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Budgets</div>
@@ -1309,7 +1634,34 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                 </div>
               ) : null}
             </div>
-          </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <section className="grid gap-4 md:grid-cols-3">
+                <article className="border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Active goals
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold text-slate-950">{planningSnapshot.activeGoalCount}</div>
+                </article>
+                <article className="border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Saved so far
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold text-slate-950">
+                    {formatEUR(planningSnapshot.totalGoalCurrent)}
+                  </div>
+                </article>
+                <article className="border border-slate-950 bg-slate-950 p-5 text-white shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    Monthly goal load
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold">
+                    {formatEUR(planningSnapshot.totalMonthlyGoalTarget)}
+                  </div>
+                </article>
+              </section>
 
           <div className="border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1374,6 +1726,13 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
+                            onClick={() => openGoalContributionEditor(goal)}
+                            className="border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-900"
+                          >
+                            Add contribution
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => openGoalEditor(goal)}
                             className="border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
                           >
@@ -1394,6 +1753,14 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                       </div>
 
                       <div className="mt-4 grid gap-2 text-sm text-slate-600">
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Starting amount</span>
+                          <span>{formatEUR(goal.starting_amount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Tracked contributions</span>
+                          <span>{formatEUR(goal.contribution_total)}</span>
+                        </div>
                         <div className="flex items-center justify-between gap-3">
                           <span>{Math.round(goal.progressRatio * 100)}% complete</span>
                           <span>{formatEUR(goal.remaining)} remaining</span>
@@ -1423,13 +1790,60 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
                           You need about {formatEUR(goal.fundingGap)} more monthly surplus to fully fund this pace.
                         </div>
                       ) : null}
+
+                      <div className="mt-4 border border-slate-200 bg-slate-50 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-semibold text-slate-950">Contribution history</div>
+                          <span className="text-xs text-slate-500">
+                            {goal.recent_contributions.length === 0
+                              ? "No entries yet"
+                              : `${goal.recent_contributions.length} recent`}
+                          </span>
+                        </div>
+
+                        {goal.recent_contributions.length === 0 ? (
+                          <p className="mt-2 text-sm leading-6 text-slate-600">
+                            Add contributions instead of editing the saved amount every month. This keeps the timeline
+                            clear.
+                          </p>
+                        ) : (
+                          <div className="mt-3 divide-y divide-slate-200 border border-slate-200 bg-white">
+                            {goal.recent_contributions.map((contribution) => (
+                              <div
+                                key={contribution.id}
+                                className="grid gap-3 px-3 py-3 text-sm sm:grid-cols-[1fr_auto_auto]"
+                              >
+                                <div>
+                                  <div className="font-semibold text-slate-950">
+                                    {formatTransactionDate(contribution.contribution_date)}
+                                  </div>
+                                  <div className="mt-1 text-slate-600">
+                                    {contribution.note?.trim() ? contribution.note : "No note added."}
+                                  </div>
+                                </div>
+                                <div className="font-semibold text-emerald-700">
+                                  +{formatEUR(Number(contribution.amount))}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => void onDeleteGoalContribution(contribution.id)}
+                                  className="border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900 transition hover:bg-slate-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </article>
                   );
                 })
               )}
             </div>
           </div>
-          </section>
+            </>
+          )}
         </>
       ) : null}
 
@@ -1586,6 +2000,163 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
           </section>
         </>
       ) : null}
+
+      <Modal
+        open={openTransactionsModal}
+        title="Transaction history"
+        size="xl"
+        onClose={() => setOpenTransactionsModal(false)}
+      >
+        <div className="space-y-5">
+          <div className="grid gap-3 lg:grid-cols-[1fr_260px_260px]">
+            <div className="flex flex-wrap gap-2">
+              {(["week", "month", "all"] as TransactionPeriodMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setTransactionPeriodMode(mode)}
+                  className={[
+                    "border px-4 py-2 text-sm font-semibold transition",
+                    transactionPeriodMode === mode
+                      ? "border-slate-950 bg-slate-950 text-white"
+                      : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50",
+                  ].join(" ")}
+                >
+                  {mode === "week" ? "Weekly view" : mode === "month" ? "Monthly view" : "All records"}
+                </button>
+              ))}
+            </div>
+
+            <label className={transactionPeriodMode === "week" ? "block" : "hidden"}>
+              <span className="text-xs font-medium text-slate-600">Choose week</span>
+              <select
+                value={activeTransactionWeek}
+                onChange={(event) => setSelectedTransactionWeek(event.target.value)}
+                className="mt-1 w-full border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-950"
+              >
+                {transactionWeekOptions.length === 0 ? (
+                  <option value={currentWeekKey}>{formatTransactionWeek(currentWeekKey)}</option>
+                ) : (
+                  transactionWeekOptions.map((week) => (
+                    <option key={week} value={week}>
+                      {formatTransactionWeek(week)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+
+            <label className={transactionPeriodMode === "month" ? "block" : "hidden"}>
+              <span className="text-xs font-medium text-slate-600">Choose month</span>
+              <select
+                value={activeTransactionMonth}
+                onChange={(event) => setSelectedTransactionMonth(event.target.value)}
+                className="mt-1 w-full border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-950"
+              >
+                {transactionMonthOptions.length === 0 ? (
+                  <option value={currentMonthKey}>{formatTransactionMonth(currentMonthKey)}</option>
+                ) : (
+                  transactionMonthOptions.map((month) => (
+                    <option key={month} value={month}>
+                      {formatTransactionMonth(month)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Records</div>
+              <div className="mt-2 text-2xl font-semibold text-slate-950">{filteredTransactions.length}</div>
+            </div>
+            <div className="border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Income</div>
+              <div className="mt-2 text-2xl font-semibold text-emerald-700">
+                {formatEUR(filteredTransactionSummary.income)}
+              </div>
+            </div>
+            <div className="border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Expenses</div>
+              <div className="mt-2 text-2xl font-semibold text-rose-700">
+                {formatEUR(filteredTransactionSummary.expenses)}
+              </div>
+            </div>
+            <div className="border border-slate-950 bg-slate-950 p-4 text-white">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">Net</div>
+              <div className="mt-2 text-2xl font-semibold">{formatEUR(filteredTransactionSummary.net)}</div>
+            </div>
+          </div>
+
+          <div className="max-h-[52vh] overflow-y-auto border border-slate-200">
+            {groupedFilteredTransactions.length === 0 ? (
+              <div className="bg-slate-50 px-5 py-8 text-sm leading-6 text-slate-600">
+                No transactions found for this period.
+              </div>
+            ) : (
+              groupedFilteredTransactions.map((group) => {
+                const groupSummary = summarizeTransactions(group.transactions);
+
+                return (
+                  <section key={group.date} className="border-b border-slate-200 last:border-b-0">
+                    <div className="flex flex-col gap-2 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-950">{formatTransactionDate(group.date)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {group.transactions.length} record{group.transactions.length === 1 ? "" : "s"}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-4 text-right text-xs sm:min-w-[320px]">
+                        <div>
+                          <div className="text-slate-500">Income</div>
+                          <div className="mt-1 font-semibold text-emerald-700">{formatEUR(groupSummary.income)}</div>
+                        </div>
+                        <div>
+                          <div className="text-slate-500">Expenses</div>
+                          <div className="mt-1 font-semibold text-rose-700">{formatEUR(groupSummary.expenses)}</div>
+                        </div>
+                        <div>
+                          <div className="text-slate-500">Net</div>
+                          <div className="mt-1 font-semibold text-slate-950">{formatEUR(groupSummary.net)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-200 bg-white">
+                      {group.transactions.map((transaction) => {
+                        const isExpense = transaction.type === "expense";
+
+                        return (
+                          <div
+                            key={transaction.id}
+                            className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_150px]"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={["h-2.5 w-2.5", isExpense ? "bg-rose-500" : "bg-emerald-500"].join(" ")} />
+                                <div className="font-semibold text-slate-950">{transaction.category}</div>
+                                <Pill tone={isExpense ? "red" : "green"}>{isExpense ? "Expense" : "Income"}</Pill>
+                              </div>
+                              <p className="mt-1 text-sm leading-6 text-slate-600">
+                                {transaction.note?.trim() ? transaction.note : "No note added."}
+                              </p>
+                            </div>
+                            <div className={["text-right text-lg font-semibold", isExpense ? "text-rose-700" : "text-emerald-700"].join(" ")}>
+                              {isExpense ? "-" : "+"}
+                              {formatEUR(Number(transaction.amount))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={openAdd}
@@ -1865,6 +2436,89 @@ export function DashboardWorkspace({ view }: { view: DashboardView }) {
               type="button"
               disabled={savingGoal}
               onClick={() => setOpenGoalModal(false)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={openGoalContributionModal}
+        title="Add savings contribution"
+        onClose={() => {
+          if (savingGoalContribution) return;
+          setOpenGoalContributionModal(false);
+        }}
+      >
+        <form onSubmit={onSaveGoalContribution} className="grid gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+            Add new savings as dated contributions. The goal total updates automatically while keeping the history.
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Goal</label>
+            <input
+              value={goalContributionForm.goalName}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none"
+              disabled
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Contribution amount (EUR)</label>
+            <input
+              value={goalContributionForm.amount}
+              onChange={(e) => updateGoalContributionForm("amount", e.target.value)}
+              inputMode="decimal"
+              placeholder="e.g. 100"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingGoalContribution}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Contribution date</label>
+            <input
+              type="date"
+              value={goalContributionForm.contributionDate}
+              onChange={(e) => updateGoalContributionForm("contributionDate", e.target.value)}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingGoalContribution}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600">Short note (optional)</label>
+            <input
+              value={goalContributionForm.note}
+              onChange={(e) => updateGoalContributionForm("note", e.target.value)}
+              placeholder="Salary transfer, monthly saving..."
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-300"
+              disabled={savingGoalContribution}
+            />
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            {goalContributionFormError
+              ? goalContributionFormError
+              : "This contribution will be added to the goal progress without editing the original starting amount."}
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={!canSaveGoalContribution}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {savingGoalContribution ? "Saving..." : "Save contribution"}
+            </button>
+
+            <button
+              type="button"
+              disabled={savingGoalContribution}
+              onClick={() => setOpenGoalContributionModal(false)}
               className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cancel

@@ -27,6 +27,16 @@ export type SavingsGoalRow = {
   updated_at: string;
 };
 
+export type SavingsGoalContributionRow = {
+  id: number;
+  user_id: string;
+  goal_id: number;
+  amount: number;
+  contribution_date: string;
+  note: string | null;
+  created_at: string;
+};
+
 export type BudgetProgressStatus = "on_track" | "at_risk" | "over_limit";
 
 export type BudgetProgress = BudgetRow & {
@@ -39,6 +49,9 @@ export type BudgetProgress = BudgetRow & {
 export type GoalFundingStatus = "complete" | "ready" | "tight" | "unfunded";
 
 export type SavingsGoalProgress = SavingsGoalRow & {
+  starting_amount: number;
+  contribution_total: number;
+  recent_contributions: SavingsGoalContributionRow[];
   remaining: number;
   progressRatio: number;
   projectedMonthsLeft: number | null;
@@ -84,6 +97,13 @@ type SavingsGoalPayload = {
   monthly_contribution_target?: number | null;
   target_date?: string | null;
   status?: SavingsGoalStatus;
+};
+
+type SavingsGoalContributionPayload = {
+  goal_id: number;
+  amount: number;
+  contribution_date: string;
+  note?: string;
 };
 
 function roundCurrency(amount: number) {
@@ -249,12 +269,57 @@ export async function deleteMySavingsGoal(id: number) {
   if (error) throw error;
 }
 
+export async function loadMySavingsGoalContributions() {
+  const user = await getCurrentUserOrThrow();
+
+  const { data, error } = await supabase
+    .from("savings_goal_contributions")
+    .select("id,user_id,goal_id,amount,contribution_date,note,created_at")
+    .eq("user_id", user.id)
+    .order("contribution_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as SavingsGoalContributionRow[];
+}
+
+export async function insertMySavingsGoalContribution(params: SavingsGoalContributionPayload) {
+  const user = await getCurrentUserOrThrow();
+
+  const { data, error } = await supabase
+    .from("savings_goal_contributions")
+    .insert({
+      user_id: user.id,
+      goal_id: params.goal_id,
+      amount: roundCurrency(params.amount),
+      contribution_date: params.contribution_date,
+      note: (params.note ?? "").trim() || null,
+    })
+    .select("id,user_id,goal_id,amount,contribution_date,note,created_at")
+    .single();
+
+  if (error) throw error;
+  return data as SavingsGoalContributionRow;
+}
+
+export async function deleteMySavingsGoalContribution(id: number) {
+  const user = await getCurrentUserOrThrow();
+  const { error } = await supabase
+    .from("savings_goal_contributions")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", user.id);
+
+  if (error) throw error;
+}
+
 export function buildPlanningSnapshot(params: {
   year: number;
   month: number;
   transactions: TransactionRow[];
   budgets: BudgetRow[];
   goals: SavingsGoalRow[];
+  contributions?: SavingsGoalContributionRow[];
 }) {
   const monthKey = getMonthKey(params.year, params.month);
   const monthTransactions = params.transactions.filter((transaction) => transaction.date.startsWith(monthKey));
@@ -318,11 +383,23 @@ export function buildPlanningSnapshot(params: {
   );
   const unbudgetedCategories = unbudgetedExpenseRows.map((row) => row.label);
 
+  const contributionsByGoalId = new Map<number, SavingsGoalContributionRow[]>();
+  for (const contribution of params.contributions ?? []) {
+    const rows = contributionsByGoalId.get(contribution.goal_id) ?? [];
+    rows.push(contribution);
+    contributionsByGoalId.set(contribution.goal_id, rows);
+  }
+
   const goalProgress = params.goals
     .map((goal) => {
-      const remaining = roundCurrency(Math.max(goal.target_amount - goal.current_amount, 0));
+      const goalContributions = contributionsByGoalId.get(goal.id) ?? [];
+      const contributionTotal = roundCurrency(
+        goalContributions.reduce((sum, contribution) => sum + Number(contribution.amount ?? 0), 0)
+      );
+      const currentAmount = roundCurrency(Number(goal.current_amount ?? 0) + contributionTotal);
+      const remaining = roundCurrency(Math.max(goal.target_amount - currentAmount, 0));
       const progressRatio =
-        goal.target_amount > 0 ? Math.min(goal.current_amount / goal.target_amount, 1) : 0;
+        goal.target_amount > 0 ? Math.min(currentAmount / goal.target_amount, 1) : 0;
       const monthsUntilTarget = goal.target_date ? getMonthsUntilTarget(goal.target_date) : null;
       const requiredMonthlyContribution =
         goal.target_date && monthsUntilTarget && remaining > 0
@@ -351,6 +428,10 @@ export function buildPlanningSnapshot(params: {
 
       return {
         ...goal,
+        current_amount: currentAmount,
+        starting_amount: roundCurrency(Number(goal.current_amount ?? 0)),
+        contribution_total: contributionTotal,
+        recent_contributions: goalContributions.slice(0, 5),
         remaining,
         progressRatio,
         projectedMonthsLeft,
@@ -417,7 +498,7 @@ export function buildPlanningSnapshot(params: {
               goal.effectiveMonthlyTarget == null ? "no monthly target" : formatEUR(goal.effectiveMonthlyTarget);
             return `- ${goal.name}: ${formatEUR(goal.current_amount)} saved of ${formatEUR(goal.target_amount)} (${formatPercent(
               goal.progressRatio
-            )}), status=${goal.fundingStatus}, monthly_target=${monthlyTarget}`;
+            )}), contributions=${formatEUR(goal.contribution_total)}, status=${goal.fundingStatus}, monthly_target=${monthlyTarget}`;
           })
       : ["- No savings goals configured yet."];
 
